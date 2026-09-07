@@ -6,6 +6,11 @@ import { MessageService } from "../messages/message-service";
 import { DraftRepository } from "./draft-repository";
 import { Settings } from "../config/settings";
 import { EventBus } from "../events/event-bus";
+import {
+  screenIncoming,
+  screenOutgoing,
+  scopeInstructions,
+} from "./guardrails";
 export class CopilotService {
   private pending = new Map<string, Promise<void>>();
   private running = new Set<string>();
@@ -38,6 +43,16 @@ export class CopilotService {
       this.chats.get(message.chatId)?.aiMode !== "copilot"
     )
       return;
+    if (this.settings.getAi().guardEnabled) {
+      const verdict = screenIncoming(message.text || "");
+      if (!verdict.allowed) {
+        this.events.publish("ai.error", {
+          chatId: message.chatId,
+          error: `Copilot skipped a message that ${verdict.reason}. Reply yourself, or turn off the request guard in Settings.`,
+        });
+        return;
+      }
+    }
     if (this.queued >= 100) {
       this.events.publish("ai.error", {
         chatId: message.chatId,
@@ -78,6 +93,14 @@ export class CopilotService {
           .reverse()
           .find((m) => m.direction === "incoming" && m.type === "text");
     if (!source) throw new Error("No recent incoming text message to reply to");
+    const guarded = config.guardEnabled;
+    if (guarded) {
+      const verdict = screenIncoming(source.text || "");
+      if (!verdict.allowed)
+        throw new Error(
+          `Copilot skipped this message because it ${verdict.reason}. Turn off the request guard in Settings to draft it anyway.`,
+        );
+    }
     const existing = this.drafts.forSource(source.id);
     if (existing) return existing;
     this.running.add(chatId);
@@ -90,6 +113,9 @@ export class CopilotService {
       const text = await this.ai.generate({
         model: config.model,
         messages: [
+          ...(guarded
+            ? [{ role: "system" as const, content: scopeInstructions }]
+            : []),
           { role: "system", content: config.systemPrompt },
           ...relevant.map((m) => ({
             role:
@@ -102,6 +128,13 @@ export class CopilotService {
       });
       if (this.closed || this.chats.get(chatId)?.aiMode !== "copilot")
         throw new Error("Copilot was turned off; generated reply discarded");
+      if (guarded) {
+        const verdict = screenOutgoing(text);
+        if (!verdict.allowed)
+          throw new Error(
+            `AI reply was discarded because it ${verdict.reason}, which is outside chat replies.`,
+          );
+      }
       const draft = this.drafts.create(chatId, source.id, text);
       this.events.publish("ai.reply.generated", draft);
       return draft;

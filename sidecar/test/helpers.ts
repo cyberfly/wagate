@@ -13,7 +13,10 @@ import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
 import type { Message, ConnectionState } from "../src/messaging/types";
 export const chatId = "60123456789@s.whatsapp.net";
-export function incoming(id = "one"): Message {
+export function incoming(
+  id = "one",
+  text = "Are you available tomorrow?",
+): Message {
   return {
     id,
     provider: "whatsapp",
@@ -22,7 +25,7 @@ export function incoming(id = "one"): Message {
     senderId: chatId,
     direction: "incoming",
     type: "text",
-    text: "Are you available tomorrow?",
+    text,
     timestamp: Date.now(),
   };
 }

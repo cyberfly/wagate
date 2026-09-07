@@ -82,6 +82,7 @@ let config = {
     systemPrompt:
       "Draft a helpful, concise reply. Return only the proposed reply.",
     contextSize: 20,
+    guardEnabled: true,
   },
   hasKey: false,
   port: 8787,
@@ -126,6 +127,7 @@ export async function previewRequest(
           model: String(data?.model),
           systemPrompt: String(data?.systemPrompt),
           contextSize: Number(data?.contextSize),
+          guardEnabled: data?.guardEnabled !== false,
         },
         hasKey: config.hasKey || !!data?.apiKey,
       };

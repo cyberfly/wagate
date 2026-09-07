@@ -102,6 +102,12 @@ History pages are chronological; `nextCursor` retrieves older messages, with lim
 3. New incoming text generates a draft; history sync does not trigger AI.
 4. Edit, dismiss, or choose **Approve & send**.
 
+### Request guard
+
+**Keep Copilot to chat replies** is on by default. Before any request reaches OpenRouter, the incoming message is screened locally, and a message is skipped when it asks for programming help, asks for essays, homework, or other long-form writing, tries to override or expose Copilot’s instructions, or exceeds 2,000 characters. Skipped messages produce no draft and no API spend; the reason appears in the app’s alerts, and you reply yourself. The guard also prepends fixed scope instructions the conversation cannot override, and discards a generated reply that comes back as code.
+
+Screening is pattern-based, so it is deliberately conservative: ordinary requests such as “send me the OTP code” pass. Clearing the checkbox in **AI Copilot** removes all three layers and lets Copilot answer anything.
+
 Only selected recent chat context goes to OpenRouter: default 20 messages, configurable 1–50, truncated to 4,000 characters each. Responses are capped at 1,000 tokens. There are no tool calls, autonomous loops, or automatic sends. Switching Off during generation discards the result. Failed/interrupted draft sends become **uncertain** and cannot be blindly retried; verify on your phone first.
 
 ## Data and security

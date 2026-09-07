@@ -23,12 +23,14 @@ test("incoming live message creates exactly one draft, bounded context, sends on
     model: "test/model",
     systemPrompt: "System",
     contextSize: 2,
+    guardEnabled: true,
   });
   s.sender.receive(incoming("source"), true);
   s.sender.receive(incoming("source"), true);
   await settle();
   expect(s.requests).toHaveLength(1);
-  expect(s.requests[0].messages).toHaveLength(3);
+  expect(s.requests[0].messages).toHaveLength(4);
+  expect(s.requests[0].messages[0].content).toContain("not a general-purpose");
   expect(s.provider.sent).toHaveLength(0);
   const draft = s.drafts.list(chatId)[0];
   expect(draft.status).toBe("pending");

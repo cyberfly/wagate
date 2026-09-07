@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { request } from "../lib/api";
 interface Config {
-  ai: { model: string; systemPrompt: string; contextSize: number };
+  ai: {
+    model: string;
+    systemPrompt: string;
+    contextSize: number;
+    guardEnabled: boolean;
+  };
   hasKey: boolean;
   port: number;
 }
@@ -98,6 +103,19 @@ export function Settings({
           value={config.ai.contextSize}
           onChange={(e) => update({ contextSize: Number(e.target.value) })}
         />
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={config.ai.guardEnabled}
+            onChange={(e) => update({ guardEnabled: e.target.checked })}
+          />
+          Keep Copilot to chat replies
+        </label>
+        <small>
+          Skips messages that ask for code, essays, homework, or that try to
+          rewrite Copilot's instructions, before any request reaches OpenRouter.
+          Turn this off only if you want Copilot to answer such requests.
+        </small>
         <label htmlFor="prompt">Instructions for Copilot</label>
         <textarea
           id="prompt"

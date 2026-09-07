@@ -12,6 +12,8 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] Enter an OpenRouter key and enable Copilot for one chat; leave another Off.
 - [ ] Receive a new message; only the enabled chat generates a draft.
 - [ ] Confirm no automatic send. Edit and approve the draft; confirm receipt without duplicates.
+- [ ] Send a coding or essay request from the other phone: no draft is generated, an alert names the reason, and OpenRouter usage does not increase.
+- [ ] Clear **Keep Copilot to chat replies**, resend the same request, and confirm a draft is generated again.
 
 Recovery checks:
 

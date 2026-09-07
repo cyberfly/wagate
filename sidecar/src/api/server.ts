@@ -229,12 +229,18 @@ export function createApi(s: Services) {
     const contextSize = Number(data.contextSize);
     if (!Number.isInteger(contextSize) || contextSize < 1 || contextSize > 50)
       throw new Error("Context size must be 1–50");
+    if (
+      data.guardEnabled !== undefined &&
+      typeof data.guardEnabled !== "boolean"
+    )
+      throw new Error("Invalid request guard");
+    const guardEnabled = data.guardEnabled !== false;
     if (data.apiKey !== undefined) {
       const key = string(data.apiKey, "API key", 512);
       (await s.vault()).set("openrouter", key);
       s.settings.set("ai.configured", "true");
     }
-    s.settings.setAi({ model, systemPrompt, contextSize });
+    s.settings.setAi({ model, systemPrompt, contextSize, guardEnabled });
     return c.json({ success: true });
   });
   app.delete("/internal/settings/key", async (c) => {
@@ -287,7 +293,7 @@ export function createApi(s: Services) {
   app.onError((error, c) => {
     s.log("error", "api.request.failed");
     const safe =
-      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot was|Draft |Reply must|Context size|Mode must|Choose valid)/.test(
+      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid)/.test(
         error.message,
       );
     return c.json(
