@@ -88,7 +88,7 @@ export function createApi(s: Services) {
       status: s.databaseHealthy() ? "ok" : "error",
       database: s.databaseHealthy() ? "connected" : "error",
       whatsapp: s.provider.getConnectionState().status,
-      version: "0.1.0",
+      version: "0.1.1",
     }),
   );
   app.use("*", async (c, next) => {
@@ -115,7 +115,7 @@ export function createApi(s: Services) {
       status: "ok",
       whatsapp: s.provider.getConnectionState().status,
       database: s.databaseHealthy() ? "connected" : "error",
-      version: "0.1.0",
+      version: "0.1.1",
     }),
   );
   app.get("/v1/chats", requireScope("chats.read"), (c) =>
@@ -184,7 +184,7 @@ export function createApi(s: Services) {
       health: {
         status: s.databaseHealthy() ? "ok" : "error",
         database: s.databaseHealthy() ? "connected" : "error",
-        version: "0.1.0",
+        version: "0.1.1",
         ai:
           s.settings.get("ai.configured") === "true"
             ? "configured"

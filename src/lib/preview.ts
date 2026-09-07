@@ -108,7 +108,7 @@ export async function previewRequest(
       health: {
         status: "ok",
         database: "connected",
-        version: "0.1.0",
+        version: "0.1.1",
         ai: config.hasKey ? "configured" : "not_configured",
       },
       connection,
