@@ -2,6 +2,23 @@
 
 A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**. Autopilot, webhooks, tunneling, MCP, multiple accounts, and media processing remain later milestones.
 
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Inbox](docs/screenshots/inbox.png) | ![WhatsApp connection](docs/screenshots/whatsapp-connection.png) |
+| **Inbox** — conversations synced to local SQLite, with app, sidecar, database, and AI status always in view. | **WhatsApp connection** — link once by QR from your phone's Linked Devices screen; the encrypted session restores on the next launch. |
+| ![AI Copilot](docs/screenshots/ai-copilot.png) | ![API access](docs/screenshots/api-access.png) |
+| **AI Copilot** — bring your own OpenRouter key. Copilot only drafts; nothing is sent without your approval. | **API access** — scoped, revocable keys for a loopback-only REST API at `127.0.0.1:8787`. |
+
+## Download
+
+Prebuilt macOS (Apple Silicon) bundles are on the [latest release](https://github.com/cyberfly/wagate/releases/latest). The build is unsigned, so on first launch right-click the app and choose **Open**, or clear the quarantine attribute:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Wagate.app
+```
+
 ## Run on macOS
 
 Prerequisites: Bun 1.3.14+, Rust, Xcode Command Line Tools, and several GB of free disk space for native compilation.
