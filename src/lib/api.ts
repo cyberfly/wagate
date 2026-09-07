@@ -26,6 +26,14 @@ import type {
   Draft,
   ConnectionState,
 } from "../../sidecar/src/messaging/types";
+export interface TunnelState {
+  status: "off" | "installing" | "starting" | "online" | "error";
+  url: string | null;
+  error: string | null;
+  installed: boolean;
+  supported: boolean;
+  progress: number | null;
+}
 export interface Snapshot {
   health: { status: string; database: string; version: string; ai: string };
   connection: ConnectionState;
@@ -33,8 +41,16 @@ export interface Snapshot {
   messages: Message[];
   drafts: Draft[];
   processing: string[];
+  tunnel: TunnelState | null;
   alerts: { id: number; error: string }[];
 }
+export const tunnelLabel: Record<string, string> = {
+  off: "Private",
+  installing: "Downloading cloudflared",
+  starting: "Opening tunnel",
+  online: "Public",
+  error: "Needs attention",
+};
 export const statusLabel: Record<string, string> = {
   disconnected: "Disconnected",
   connecting: "Connecting",

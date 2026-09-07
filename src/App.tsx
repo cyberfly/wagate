@@ -168,7 +168,7 @@ export default function App() {
           ) : page === "settings" ? (
             <Settings busy={busy} act={act} />
           ) : page === "api" ? (
-            <ApiAccess busy={busy} act={act} />
+            <ApiAccess busy={busy} act={act} tunnel={snapshot?.tunnel} />
           ) : (
             <>
               <div className="section-heading">

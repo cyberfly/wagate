@@ -15,6 +15,7 @@ import { createApi } from "./api/server";
 import { OpenRouterProvider } from "./ai/openrouter";
 import { DraftRepository } from "./ai/draft-repository";
 import { CopilotService } from "./ai/copilot-service";
+import { TunnelService } from "./tunnel/tunnel-service";
 process.umask(0o077);
 const port = Number(process.env.WAGATE_PORT || 8787);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
@@ -67,7 +68,15 @@ const copilot = new CopilotService(
 );
 const desktopToken = process.env.WAGATE_DESKTOP_TOKEN || "";
 delete process.env.WAGATE_DESKTOP_TOKEN;
-const app = createApi({
+const databaseHealthy = () => {
+  try {
+    db.query("SELECT 1").get();
+    return true;
+  } catch {
+    return false;
+  }
+};
+const services = {
   provider,
   keys,
   chats,
@@ -78,18 +87,24 @@ const app = createApi({
   vault,
   drafts,
   copilot,
-  desktopToken,
   port,
-  databaseHealthy: () => {
-    try {
-      db.query("SELECT 1").get();
-      return true;
-    } catch {
-      return false;
-    }
-  },
+  databaseHealthy,
   log,
+};
+// The tunnel serves this second app, which carries the public routes only, on
+// its own ephemeral loopback port. `/internal` never leaves the machine.
+const publicApp = createApi({
+  ...services,
+  desktopToken: "",
+  publicMode: true,
 });
+const tunnel = new TunnelService({
+  dataDir,
+  events,
+  log,
+  fetch: publicApp.fetch,
+});
+const app = createApi({ ...services, desktopToken, tunnel });
 let server: ReturnType<typeof Bun.serve>;
 try {
   server = Bun.serve({
@@ -109,12 +124,15 @@ const shutdown = async () => {
   if (stopping) return;
   stopping = true;
   copilot.close();
+  tunnel.close();
   server.stop(true);
   await provider.disconnect();
   db.close();
   log("info", "sidecar.stopped");
   process.exit(0);
 };
+// Last resort: never leave a public tunnel running after the gateway is gone.
+process.on("exit", () => tunnel.close());
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
 if (process.env.WAGATE_DESKTOP === "1") {

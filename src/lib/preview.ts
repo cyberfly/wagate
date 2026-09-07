@@ -1,5 +1,5 @@
 // Development-only fixture. Dynamically imported only in Vite preview mode.
-import type { Snapshot, Message, Draft, Chat } from "./api";
+import type { Snapshot, Message, Draft, Chat, TunnelState } from "./api";
 const now = Date.now();
 const chats: Chat[] = [
   {
@@ -95,6 +95,14 @@ const keys: {
   lastUsedAt: null;
   revokedAt: number | null;
 }[] = [];
+let tunnel: TunnelState = {
+  status: "off",
+  url: null,
+  error: null,
+  installed: true,
+  supported: true,
+  progress: null,
+};
 export async function previewRequest(
   path: string,
   method: string,
@@ -116,8 +124,23 @@ export async function previewRequest(
       messages: messages.filter((m) => m.chatId === id),
       drafts: drafts.filter((d) => d.chatId === id && d.status === "pending"),
       processing: [],
+      tunnel,
       alerts: [],
     } satisfies Snapshot;
+  }
+  if (url.pathname.startsWith("/internal/tunnel")) {
+    if (path === "/internal/tunnel/start")
+      tunnel = {
+        ...tunnel,
+        status: "online",
+        url: "https://sample-preview-gateway.trycloudflare.com",
+        error: null,
+      };
+    if (path === "/internal/tunnel/stop")
+      tunnel = { ...tunnel, status: "off", url: null, error: null };
+    if (path === "/internal/tunnel/install")
+      tunnel = { ...tunnel, installed: true };
+    return { ...tunnel };
   }
   if (path === "/internal/settings") {
     if (method === "PUT") {

@@ -12,9 +12,10 @@ Implemented the supplied plan’s scoped v0.1 MVP. Later milestones are deferred
 | REST / API keys               | Authentication, permissions, revocation, validation, sending tests pass.                        |
 | OpenRouter / Copilot          | Mocked inference/errors, bounded context, Off/history exclusion, approval-only send tests pass. |
 | Copilot request guard         | Incoming screening, scope instructions, code-output rejection, and guard-off bypass tests pass. |
+| Cloudflare Tunnel             | Quick-tunnel spawn, hostname parse across chunk boundaries, exit/timeout failure, double-start refusal, public-app route isolation, and auth throttling tests pass. Pinned cloudflared download, extraction, and execution verified live. |
 | Native packaging              | macOS arm64 debug and optimized release app bundles built successfully.                         |
 
-Automated checkpoint: 28 backend tests / 121 assertions, production frontend build, standalone sidecar compilation and HTTP smoke, live unauthenticated WhatsApp QR generation. No WhatsApp account was paired, no real message was sent, and no paid AI request was made. Preview data is fictional and excluded from production.
+Automated checkpoint: 36 backend tests / 166 assertions, production frontend build, standalone sidecar compilation and HTTP smoke, live unauthenticated WhatsApp QR generation. No WhatsApp account was paired, no real message was sent, and no paid AI request was made. Preview data is fictional and excluded from production.
 
 Native launch verified the loopback sidecar, SQLite connection, OS credential-store bootstrap, and a real WhatsApp pairing QR. Quitting the desktop app closes the API port. The final release build reopens successfully and preserves the disconnected/pause setting. No account was paired and no real message was sent. The disk-space issue encountered during early builds has cleared; native compilation now succeeds.
 

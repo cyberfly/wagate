@@ -9,6 +9,7 @@ import { Vault } from "../src/security/vault";
 import { DraftRepository } from "../src/ai/draft-repository";
 import { CopilotService } from "../src/ai/copilot-service";
 import { createApi } from "../src/api/server";
+import { TunnelService } from "../src/tunnel/tunnel-service";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
 import type { Message, ConnectionState } from "../src/messaging/types";
@@ -77,7 +78,7 @@ export function setup(ai?: AIProvider) {
     settings,
     events,
   );
-  const app = createApi({
+  const services = {
     provider,
     keys,
     chats,
@@ -88,10 +89,25 @@ export function setup(ai?: AIProvider) {
     vault: async () => vault,
     drafts,
     copilot,
-    desktopToken: "test-desktop-token",
     port: 8787,
     databaseHealthy: () => true,
     log: () => {},
+  };
+  const publicApp = createApi({
+    ...services,
+    desktopToken: "",
+    publicMode: true,
+  });
+  const tunnel = new TunnelService({
+    dataDir: "/nonexistent",
+    events,
+    log: () => {},
+    fetch: publicApp.fetch,
+  });
+  const app = createApi({
+    ...services,
+    desktopToken: "test-desktop-token",
+    tunnel,
   });
   const call = (
     path: string,
@@ -123,9 +139,12 @@ export function setup(ai?: AIProvider) {
     copilot,
     requests,
     app,
+    publicApp,
+    tunnel,
     call,
     close: () => {
       copilot.close();
+      tunnel.close();
       db.close();
     },
   };

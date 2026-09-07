@@ -909,3 +909,12 @@ footer {
     transition: none !important;
   }
 }
+.tunnel-panel {
+  grid-column: 1;
+}
+.tunnel-panel .privacy-note {
+  margin-top: 20px;
+}
+.tunnel-panel .privacy-note code {
+  font-size: 11px;
+}

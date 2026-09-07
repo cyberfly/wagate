@@ -1,6 +1,6 @@
 # Wagate
 
-A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**. Autopilot, webhooks, tunneling, MCP, multiple accounts, and media processing remain later milestones.
+A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus optional Cloudflare Tunnel publishing. Autopilot, webhooks, MCP, multiple accounts, and media processing remain later milestones.
 
 ## Screenshots
 
@@ -93,7 +93,19 @@ curl http://127.0.0.1:8787/v1/messages/send \
 
 Provide either `to` (international number, optional `+`) or `chatId` (WhatsApp JID), plus 1–10,000 characters of text. The response contains `success`, `messageId`, and the normalized message. Success means provider acceptance, not recipient delivery/read confirmation. Do not automatically retry timed-out sends; check delivery first to avoid duplicates.
 
-History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The list shows up to 1,000 recent chats. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled by the application.
+History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The list shows up to 1,000 recent chats. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled unless you start one in **API access**.
+
+## Public access (Cloudflare Tunnel)
+
+The gateway is loopback-only until you ask otherwise. **API access → Go public** starts a [Cloudflare quick tunnel](https://developers.cloudflare.com/tunnel/setup/#quick-tunnels-development) and shows an `https://….trycloudflare.com` address you can call from anywhere. **Stop public access** closes it; so does quitting Wagate.
+
+The tunnel does not point at `127.0.0.1:8787`. It gets a separate loopback listener carrying the public routes only, so `/internal/*` is not mounted on it at all and the desktop token is rejected there. Public `/health` returns `{"status":"ok"}` and nothing about your account. Failed key guesses on that listener are throttled to 20 per minute; valid keys are never throttled.
+
+At least one active API key is required before the tunnel starts — the address is otherwise useless. Anyone holding a key can read your chats and send messages from your number over that address, so publish only keys you can revoke, and revoke them when you are done.
+
+`cloudflared` runs the tunnel. Wagate uses, in order: `WAGATE_CLOUDFLARED` if set, its own copy in the app data directory, then a `cloudflared` on your `PATH`. If none is found, the panel offers a one-time download of the pinned release (`2026.8.3`, ~20 MB) from Cloudflare's official GitHub releases over HTTPS into a `0700` directory; there is no published checksum to verify beyond that transport. `brew install cloudflared` (or your package manager) works equally well and is picked up without a restart.
+
+Quick-tunnel caveats, all from Cloudflare: the address changes on every start, `trycloudflare.com` buffers `text/event-stream` so `GET /v1/events` will not stream through it (poll the other endpoints instead), concurrency is capped at 200 requests, and Cloudflare positions it as a debug aid rather than a production endpoint. For a stable hostname and Cloudflare Access policies, run a named tunnel yourself against `127.0.0.1:8787`.
 
 ## Copilot
 
