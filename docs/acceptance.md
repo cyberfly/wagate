@@ -1,0 +1,29 @@
+# Manual v0.1 acceptance
+
+Use an account you control and a consenting test recipient. Automated tests are not proof of real delivery.
+
+- [x] Build and launch the native macOS app; health shows App/Sidecar Running and Database Connected.
+- [ ] Scan a WhatsApp QR from Linked Devices; verify the expected account.
+- [ ] Close the app and verify the local API stops; reopen and reconnect without another QR.
+- [ ] Receive a test message; verify it appears in the UI and survives restart.
+- [ ] Reply from the UI and confirm receipt on the other phone.
+- [ ] Create a `messages.send` API key; call `/v1/messages/send` to the test recipient and confirm receipt.
+- [ ] Revoke the key; subsequent calls return 401.
+- [ ] Enter an OpenRouter key and enable Copilot for one chat; leave another Off.
+- [ ] Receive a new message; only the enabled chat generates a draft.
+- [ ] Confirm no automatic send. Edit and approve the draft; confirm receipt without duplicates.
+
+Recovery checks:
+
+- [ ] QR expiry refreshes or gives a visible retry state.
+- [ ] Network interruption triggers bounded reconnection.
+- [ ] Unlinking from the phone gives a session error and a working reset flow.
+- [x] Disconnect pauses automatic reconnection across restarts.
+- [ ] An occupied API port produces a visible failure.
+- [ ] Invalid OpenRouter key produces an actionable error without leaking the key.
+- [ ] Turning Copilot Off during generation discards the result.
+- [ ] Interrupted send becomes uncertain and is not automatically retried.
+- [ ] Logs contain no credentials, raw sessions, or message contents.
+- [ ] OS credential-store access survives app restart/update.
+
+Release checks: signing/notarization, macOS x64 and Windows builds, platform credential storage, installer behavior, long-running sessions, group/LID identity cases.
