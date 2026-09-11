@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setup } from "./helpers";
@@ -11,9 +11,11 @@ import {
   normalizePhone,
   phoneColumn,
   nameFor,
+  sendLogCsv,
+  toCsv,
 } from "../src/broadcast/csv";
 import { openDatabase } from "../src/db/database";
-import { schema } from "../src/db/schema";
+import { migrations } from "../src/db/schema";
 import { BroadcastRepository } from "../src/broadcast/broadcast-repository";
 import type { Broadcast } from "../src/messaging/types";
 // Same shape as an event-ticketing export: quoted cells span lines, some
@@ -94,25 +96,47 @@ test("phone numbers normalise to international digits", () => {
   expect(normalizePhone("6.01E+10")).toEqual({ error: "Invalid number" });
   expect(normalizePhone("")).toEqual({ error: "No number" });
 });
-test("a version 1 database gains broadcast tables without losing data", () => {
+test("older databases upgrade to the current version without losing data", () => {
   const dir = mkdtempSync(join(tmpdir(), "wagate-migrate-"));
-  const path = join(dir, "wagate.sqlite");
-  const old = new Database(path, { create: true });
-  old.exec(schema);
-  old.exec(
+  const upgrade = (name: string, steps: string[], seed: string) => {
+    const path = join(dir, name);
+    const old = new Database(path, { create: true });
+    for (const step of steps) old.exec(step);
+    old.exec(seed);
+    old.close();
+    const db = openDatabase(path);
+    expect(
+      (db.query("PRAGMA user_version").get() as { user_version: number })
+        .user_version,
+    ).toBe(migrations.length);
+    return db;
+  };
+  const v1 = upgrade(
+    "v1.sqlite",
+    [migrations[0]],
     "INSERT INTO settings(key,value) VALUES('whatsapp.autoConnect','true')",
   );
-  old.close();
-  const db = openDatabase(path);
-  expect(
-    (db.query("PRAGMA user_version").get() as { user_version: number })
-      .user_version,
-  ).toBe(2);
-  expect(db.query("SELECT value FROM settings").get()).toEqual({
+  expect(v1.query("SELECT value FROM settings").get()).toEqual({
     value: "true",
   });
-  expect(new BroadcastRepository(db).list()).toEqual([]);
-  db.close();
+  expect(new BroadcastRepository(v1).list()).toEqual([]);
+  v1.close();
+  // A broadcast from before the send log keeps its results, with no timeline.
+  const v2 = upgrade(
+    "v2.sqlite",
+    migrations.slice(0, 2),
+    `INSERT INTO broadcasts VALUES('b','Old','completed',5,10,NULL,1,1);
+     INSERT INTO broadcast_recipients(broadcast_id,position,chat_id,label,text,status,sent_at)
+       VALUES('b',1,'60120000001@s.whatsapp.net','Aina','Hi','sent',1)`,
+  );
+  const repository = new BroadcastRepository(v2);
+  expect(repository.get("b")).toMatchObject({ total: 1, sent: 1 });
+  expect(repository.recipients("b")[0]).toMatchObject({
+    status: "sent",
+    attemptedAt: null,
+  });
+  expect(repository.events("b")).toEqual([]);
+  v2.close();
   rmSync(dir, { recursive: true });
 });
 test("a broadcast sends each message once, in order, through the message service", async () => {
@@ -181,8 +205,13 @@ test("a failed send is marked uncertain, pauses the broadcast, and is never retr
     "uncertain",
     "pending",
   ]);
-  expect(paused.broadcast.error).toContain("sending to Person 2 failed");
-  expect(errors).toHaveLength(1);
+  expect(paused.broadcast.error).toContain("Sending to Person 2 failed");
+  expect(errors).toEqual([
+    {
+      id: b.id,
+      error: expect.stringMatching(/^Broadcast paused: Sending to Person 2 failed/),
+    },
+  ]);
   s.broadcasts.resume(b.id);
   await until(() => s.broadcasts.get(b.id).broadcast.status === "completed");
   expect(calls).toBe(3);
@@ -226,6 +255,121 @@ test("a restart pauses running broadcasts and flags in-flight sends as uncertain
     uncertain: 1,
     pending: 1,
   } satisfies Partial<Broadcast>);
+  expect(
+    repository.events(b.id).map((e) => [e.type, e.position, e.detail]),
+  ).toEqual([
+    ["created", null, "2 recipients"],
+    ["uncertain", 1, "Wagate stopped while sending"],
+    ["paused", null, "Wagate restarted. Resume to continue."],
+  ]);
+  s.close();
+});
+test("the send log records every outcome and state change, in order", async () => {
+  const s = setup();
+  const send = s.provider.sendText.bind(s.provider);
+  let calls = 0;
+  s.provider.sendText = async (chatId, text) => {
+    if (++calls === 2) throw new Error("socket closed");
+    return send(chatId, text);
+  };
+  const b = s.broadcasts.create(input(3));
+  await until(() => s.broadcasts.get(b.id).broadcast.status === "paused");
+  s.broadcasts.resume(b.id);
+  await until(() => s.broadcasts.get(b.id).broadcast.status === "completed");
+  const { events, recipients } = s.broadcasts.get(b.id);
+  expect(events.map((e) => [e.type, e.label, e.detail])).toEqual([
+    ["created", null, "3 recipients"],
+    ["sent", "Person 1", null],
+    [
+      "uncertain",
+      "Person 2",
+      "Send failed. Delivery is unknown; check this chat on your phone.",
+    ],
+    [
+      "paused",
+      null,
+      "Sending to Person 2 failed. Check that chat on your phone, then resume to continue with the rest.",
+    ],
+    ["resumed", null, null],
+    ["sent", "Person 3", null],
+    ["completed", null, "2 sent, 1 uncertain"],
+  ]);
+  expect(events[1].chatId).toBe("60120000001@s.whatsapp.net");
+  expect(events.every((e, i) => !i || e.at >= events[i - 1].at)).toBe(true);
+  // Each attempt is timed, including the one whose outcome is unknown.
+  expect(recipients[1]).toMatchObject({ status: "uncertain", sentAt: null });
+  expect(recipients[1].attemptedAt).toBeNumber();
+  expect(recipients[0].sentAt! >= recipients[0].attemptedAt!).toBe(true);
+  // A pause by the user carries no reason; a cancel counts what it skipped.
+  const c = s.broadcasts.create(input(4));
+  s.broadcasts.pause(c.id);
+  s.broadcasts.cancel(c.id);
+  expect(
+    s.broadcasts.get(c.id).events.map((e) => [e.type, e.detail]),
+  ).toEqual([
+    ["created", "4 recipients"],
+    ["paused", null],
+    ["cancelled", "4 not sent"],
+  ]);
+  s.close();
+});
+test("CSV output quotes as needed and defuses spreadsheet formulas", () => {
+  expect(
+    toCsv([
+      ["a", "b,c", 'say "hi"', "two\nlines"],
+      ["=HYPERLINK(\"x\")", "+60123", "-1", "@me", "plain"],
+    ]),
+  ).toBe(
+    'a,"b,c","say ""hi""","two\nlines"\r\n' +
+      "\"'=HYPERLINK(\"\"x\"\")\",'+60123,'-1,'@me,plain\r\n",
+  );
+  const csv = sendLogCsv([
+    {
+      position: 1,
+      chatId: "60120000001@s.whatsapp.net",
+      label: "Aina",
+      text: "Hi Aina, see you",
+      status: "uncertain",
+      messageId: null,
+      error: "Send failed",
+      attemptedAt: new Date(2026, 8, 11, 9, 5, 7).getTime(),
+      sentAt: null,
+    },
+  ]);
+  expect(readCsv(csv).rows).toEqual([
+    {
+      Row: "1",
+      Name: "Aina",
+      Number: "60120000001",
+      Status: "Uncertain",
+      Attempted: "2026-09-11 09:05:07",
+      Sent: "",
+      "Message ID": "",
+      Note: "Send failed",
+      Message: "Hi Aina, see you",
+    },
+  ]);
+});
+test("saving the send log never overwrites a file and reports failure plainly", async () => {
+  const s = setup();
+  const dir = mkdtempSync(join(tmpdir(), "wagate-export-"));
+  const b = s.broadcasts.create({ ...input(2), name: "Launch / Sept: VIP" });
+  await until(() => s.broadcasts.get(b.id).broadcast.status === "completed");
+  const first = s.broadcasts.export(b.id, dir).path;
+  const second = s.broadcasts.export(b.id, dir).path;
+  expect(first).toMatch(/Launch-Sept-VIP-send-log-\d{4}-\d{2}-\d{2}-\d{4}\.csv$/);
+  expect(second).toBe(first.replace(/\.csv$/, "-2.csv"));
+  const text = readFileSync(first, "utf8");
+  expect(text.startsWith("\uFEFF")).toBe(true);
+  expect(readCsv(text).rows.map((r) => [r.Name, r.Status])).toEqual([
+    ["Person 1", "Sent"],
+    ["Person 2", "Sent"],
+  ]);
+  expect(statSync(first).mode & 0o777).toBe(0o600);
+  expect(() => s.broadcasts.export(b.id, join(dir, "missing"))).toThrow(
+    "Broadcast log could not be saved",
+  );
+  rmSync(dir, { recursive: true });
   s.close();
 });
 test("creation validates input and allows only one running broadcast", () => {
@@ -274,6 +418,16 @@ test("the broadcast API is desktop-only and accepts CSV-sized bodies", async () 
     broadcasts: Broadcast[];
   };
   expect(snapshot.broadcasts[0]).toMatchObject({ id, total: 200 });
+  const details = (await (await s.call("/internal/broadcasts/" + id)).json()) as {
+    recipients: unknown[];
+    events: { type: string }[];
+  };
+  expect(details.recipients).toHaveLength(200);
+  expect(details.events[0]).toMatchObject({ type: "created" });
+  expect(
+    (await s.call(`/internal/broadcasts/${id}/export`, "POST", undefined, key.key))
+      .status,
+  ).toBe(403);
   expect((await s.call(`/internal/broadcasts/${id}/pause`, "POST")).status).toBe(200);
   const second = await s.call(`/internal/broadcasts/${id}/pause`, "POST");
   expect(second.status).toBe(400);

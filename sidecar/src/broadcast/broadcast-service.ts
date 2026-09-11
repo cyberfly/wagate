@@ -1,9 +1,12 @@
+import { existsSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { MessagingProvider } from "../messaging/messaging-provider";
 import type { Broadcast } from "../messaging/types";
 import { resolveChatId, MessageService } from "../messages/message-service";
 import { EventBus } from "../events/event-bus";
 import { BroadcastRepository } from "./broadcast-repository";
-import { maxRecipients } from "./csv";
+import { localTime, maxRecipients, sendLogCsv } from "./csv";
 export interface BroadcastInput {
   name: string;
   minDelay: number;
@@ -13,6 +16,10 @@ export interface BroadcastInput {
 /** A random gap between sends, so a list does not go out at machine speed. */
 export function randomPace(b: Pick<Broadcast, "minDelay" | "maxDelay">) {
   return (b.minDelay + Math.random() * (b.maxDelay - b.minDelay)) * 1000;
+}
+function downloads() {
+  const dir = join(homedir(), "Downloads");
+  return existsSync(dir) ? dir : homedir();
 }
 /**
  * Sends one broadcast at a time, one message at a time, through the same
@@ -39,7 +46,36 @@ export class BroadcastService {
   get(id: string) {
     const broadcast = this.repository.get(id);
     if (!broadcast) throw new Error("Broadcast not found");
-    return { broadcast, recipients: this.repository.recipients(id) };
+    return {
+      broadcast,
+      recipients: this.repository.recipients(id),
+      events: this.repository.events(id),
+    };
+  }
+  /**
+   * Writes the send log as CSV to Downloads and returns its path. The webview
+   * cannot save files itself. Never overwrites an existing file.
+   */
+  export(id: string, dir = downloads()) {
+    const { broadcast, recipients } = this.get(id);
+    // The BOM makes Excel read names and messages as UTF-8.
+    const csv = "\uFEFF" + sendLogCsv(recipients);
+    const base =
+      broadcast.name.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
+      "broadcast";
+    const stamp = localTime(Date.now()).replace(" ", "-").replace(/:/g, "").slice(0, 15);
+    for (let n = 1; n <= 50; n++) {
+      const path = join(dir, `${base}-send-log-${stamp}${n > 1 ? `-${n}` : ""}.csv`);
+      try {
+        writeFileSync(path, csv, { flag: "wx", mode: 0o600 });
+        return { path };
+      } catch (error) {
+        if ((error as { code?: string }).code !== "EEXIST") break;
+      }
+    }
+    throw new Error(
+      "Broadcast log could not be saved. Check that your Downloads folder is writable, or use Copy CSV.",
+    );
   }
   create(input: BroadcastInput) {
     const name = input.name.trim();
@@ -124,9 +160,13 @@ export class BroadcastService {
   private updated(id: string) {
     this.events.publish("broadcast.updated", { id });
   }
-  private halt(id: string, error: string) {
-    if (!this.repository.pause(id, error)) return;
-    this.events.publish("broadcast.error", { id, error });
+  /** Pauses on the service's own initiative; the alert says why. */
+  private halt(id: string, reason: string) {
+    if (!this.repository.pause(id, reason)) return;
+    this.events.publish("broadcast.error", {
+      id,
+      error: `Broadcast paused: ${reason}`,
+    });
     this.updated(id);
   }
   private schedule(ms: number) {
@@ -151,7 +191,7 @@ export class BroadcastService {
     )
       return this.halt(
         broadcast.id,
-        "Broadcast paused: WhatsApp disconnected. Reconnect, then resume.",
+        "WhatsApp disconnected. Reconnect, then resume.",
       );
     const next = broadcast.pending ? this.repository.claim(broadcast.id) : null;
     if (!next) {
@@ -175,7 +215,7 @@ export class BroadcastService {
       });
       this.halt(
         broadcast.id,
-        `Broadcast paused: sending to ${next.label} failed. Check that chat on your phone, then resume to continue with the rest.`,
+        `Sending to ${next.label} failed. Check that chat on your phone, then resume to continue with the rest.`,
       );
     } finally {
       this.sending = false;

@@ -5,11 +5,8 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  request,
-  type Broadcast as Summary,
-  type BroadcastRecipient,
-} from "../lib/api";
+import { request, type Broadcast as Summary } from "../lib/api";
+import { BroadcastLog } from "./BroadcastLog";
 import {
   maxRecipients,
   nameFor,
@@ -40,13 +37,6 @@ const statusLabel: Record<Summary["status"], string> = {
   completed: "Done",
   cancelled: "Cancelled",
 };
-const recipientLabel: Record<BroadcastRecipient["status"], string> = {
-  pending: "Waiting",
-  sending: "Sending…",
-  sent: "Sent",
-  uncertain: "Uncertain",
-  cancelled: "Skipped",
-};
 function duration(seconds: number) {
   if (seconds < 60) return "under a minute";
   const minutes = Math.round(seconds / 60);
@@ -66,7 +56,9 @@ export function Broadcast({ broadcasts, connected, busy, act }: Props) {
     [maxDelay, setMaxDelay] = useState(20),
     [excluded, setExcluded] = useState<Set<number>>(new Set()),
     [current, setCurrent] = useState(0),
-    [confirming, setConfirming] = useState(false);
+    [confirming, setConfirming] = useState(false),
+    [logId, setLogId] = useState<string | null>(null);
+  const logged = broadcasts.find((b) => b.id === logId);
   const editor = useRef<HTMLTextAreaElement>(null),
     caret = useRef<number | null>(null);
   const rows = useMemo<Row[]>(() => {
@@ -197,9 +189,24 @@ export function Broadcast({ broadcasts, connected, busy, act }: Props) {
       {broadcasts.length ? (
         <section className="broadcast-history">
           {broadcasts.map((b) => (
-            <BroadcastCard key={b.id} broadcast={b} busy={busy} act={act} />
+            <BroadcastCard
+              key={b.id}
+              broadcast={b}
+              busy={busy}
+              act={act}
+              logOpen={b.id === logId}
+              toggleLog={() => setLogId(b.id === logId ? null : b.id)}
+            />
           ))}
         </section>
+      ) : null}
+      {logged ? (
+        <BroadcastLog
+          broadcast={logged}
+          busy={busy}
+          act={act}
+          close={() => setLogId(null)}
+        />
       ) : null}
       <section className="panel settings-panel">
         <span className="eyebrow">SEND TO A LIST</span>
@@ -488,26 +495,16 @@ function BroadcastCard({
   broadcast: b,
   busy,
   act,
+  logOpen,
+  toggleLog,
 }: {
   broadcast: Summary;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
+  logOpen: boolean;
+  toggleLog: () => void;
 }) {
-  const [open, setOpen] = useState(false),
-    [recipients, setRecipients] = useState<BroadcastRecipient[]>([]),
-    [error, setError] = useState("");
   const done = b.total - b.pending;
-  useEffect(() => {
-    if (!open) return;
-    request<{ recipients: BroadcastRecipient[] }>(
-      "/internal/broadcasts/" + b.id,
-    )
-      .then((result) => {
-        setRecipients(result.recipients);
-        setError("");
-      })
-      .catch((e) => setError(String(e)));
-  }, [open, b.id, b.updatedAt]);
   const action = (name: string, method = "POST") =>
     void act(() =>
       request(
@@ -516,7 +513,7 @@ function BroadcastCard({
       ),
     );
   return (
-    <article className="panel broadcast-card">
+    <article className={"panel broadcast-card" + (logOpen ? " active" : "")}>
       <div className="broadcast-card-head">
         <strong title={b.name}>{b.name}</strong>
         <span
@@ -575,32 +572,12 @@ function BroadcastCard({
         )}
         <button
           className="text-button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
+          aria-expanded={logOpen}
+          onClick={toggleLog}
         >
-          {open ? "Hide recipients" : "Recipients"}
+          {logOpen ? "Hide log" : "View log"}
         </button>
       </div>
-      {open ? (
-        <ol className="recipient-status">
-          {error ? <li className="inline-error">{error}</li> : null}
-          {recipients.map((r) => (
-            <li key={r.position} title={r.error || r.text}>
-              <span>{r.label}</span>
-              <small className={"state-" + r.status}>
-                {recipientLabel[r.status]}
-                {r.sentAt
-                  ? " " +
-                    new Date(r.sentAt).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                  : ""}
-              </small>
-            </li>
-          ))}
-        </ol>
-      ) : null}
     </article>
   );
 }

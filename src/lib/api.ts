@@ -20,6 +20,7 @@ export type {
   Draft,
   ConnectionState,
   Broadcast,
+  BroadcastEvent,
   BroadcastRecipient,
 } from "../../sidecar/src/messaging/types";
 import type {

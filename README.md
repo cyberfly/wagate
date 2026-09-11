@@ -119,11 +119,20 @@ Quick-tunnel caveats, all from Cloudflare: the address changes on every start, `
 
 Messages go out with a random gap, 10–20 seconds by default and 5–600 seconds allowed. Sending many near-identical messages quickly is a common reason WhatsApp restricts a number, so keep the gap generous and send only to people who expect to hear from you. Only one broadcast sends at a time, and Wagate must stay open.
 
-Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, **Cancel**, and a per-recipient list. Sent messages also appear in the inbox. Safety rules follow the rest of Wagate:
+Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, and **Cancel**. Sent messages also appear in the inbox. Safety rules follow the rest of Wagate:
 
 - If WhatsApp disconnects, the broadcast pauses before the next send; reconnect and **Resume**.
 - If a send fails, the delivery state is unknown. That recipient is marked **uncertain** and never retried, and the broadcast pauses so you can check your phone before resuming with the rest.
 - Quitting or restarting Wagate pauses a running broadcast. It never resumes by itself, and a send that was in flight becomes uncertain.
+
+### Send log
+
+**View log** on a broadcast card opens its send log, which updates live while sending:
+
+- **Recipients** lists every row with its status (Sent, Uncertain, Waiting, Skipped), the time, and any failure reason. Filter by status, or click a row to see the exact message that went out, when it was attempted and accepted, and its WhatsApp message ID.
+- **Timeline** records what happened, newest first: start, each send, each failure, every pause with its reason (by you, a disconnect, a failed send, or a restart), resume, cancel, and finish.
+
+**Save CSV** writes the recipient results to your Downloads folder as `<name>-send-log-<date>-<time>.csv`, never overwriting an existing file. **Copy CSV** puts the same text on the clipboard. The file has one row per recipient: row, name, number, status, attempted and sent times, message ID, note, and message. Cells that start like a spreadsheet formula (`=`, `+`, `-`, `@`) are prefixed with `'` so that names typed into a form by other people cannot run formulas in Excel or Sheets. Broadcasts made before version 3 of the database keep their results but have no timeline.
 
 Broadcasts are desktop-only (`/internal/broadcasts`); API keys and the Cloudflare tunnel cannot start one. Rendered messages are stored in SQLite alongside other message text.
 
@@ -149,7 +158,7 @@ Desktop data uses Tauri’s app-data directory, normally `~/Library/Application 
 - `wagate.sqlite`: chats, messages, settings, hashed API keys, drafts, broadcasts, encrypted secrets.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables to existing databases. Accounts, contacts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables and version 3 the send log to existing databases. Accounts, contacts, webhooks, and AI-profile tables reserve space for later milestones.
 
 WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere). There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 

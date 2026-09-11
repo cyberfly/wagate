@@ -337,6 +337,9 @@ export function createApi(s: Services) {
     app.get("/internal/broadcasts/:id", (c) =>
       c.json(s.broadcasts.get(c.req.param("id"))),
     );
+    app.post("/internal/broadcasts/:id/export", (c) =>
+      c.json(s.broadcasts.export(c.req.param("id"))),
+    );
     for (const action of ["pause", "resume", "cancel"] as const)
       app.post(`/internal/broadcasts/:id/${action}`, (c) =>
         c.json(s.broadcasts[action](c.req.param("id"))),

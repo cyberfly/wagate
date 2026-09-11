@@ -1,5 +1,6 @@
 // Pure helpers for bulk sends from a CSV. The desktop UI bundles this file to
 // build its preview, so it must not use Bun or Node APIs.
+import type { BroadcastRecipient } from "../messaging/types";
 export const maxRecipients = 1000;
 export interface CsvTable {
   headers: string[];
@@ -144,4 +145,50 @@ export function nameFor(row: Record<string, string>) {
     [first, last].filter(Boolean).join(" ") ||
     get(/^(full\s*name|name|contact\s*name)$/i)
   );
+}
+export const recipientStatus: Record<BroadcastRecipient["status"], string> = {
+  pending: "Waiting",
+  sending: "Sending",
+  sent: "Sent",
+  uncertain: "Uncertain",
+  cancelled: "Skipped",
+};
+/** Local time as `2026-09-11 14:05:09`, which spreadsheets sort correctly. */
+export function localTime(ms: number | null) {
+  if (!ms) return "";
+  const d = new Date(ms),
+    p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+/** A broadcast's send results, one row per recipient, as CSV text. */
+export function sendLogCsv(recipients: BroadcastRecipient[]) {
+  return toCsv([
+    ["Row", "Name", "Number", "Status", "Attempted", "Sent", "Message ID", "Note", "Message"],
+    ...recipients.map((r) => [
+      String(r.position),
+      r.label,
+      r.chatId.split("@")[0],
+      recipientStatus[r.status],
+      localTime(r.attemptedAt),
+      localTime(r.sentAt),
+      r.messageId ?? "",
+      r.error ?? "",
+      r.text,
+    ]),
+  ]);
+}
+export function toCsv(rows: string[][]) {
+  return rows
+    .map((row) =>
+      row
+        .map((cell) => {
+          // Spreadsheets run a cell that starts like a formula, and names in
+          // an attendee list are typed by other people.
+          const safe = /^[=+\-@\t\r]/.test(cell) ? "'" + cell : cell;
+          return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+        })
+        .join(","),
+    )
+    .join("\r\n")
+    .concat("\r\n");
 }

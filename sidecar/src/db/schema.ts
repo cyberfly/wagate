@@ -44,5 +44,17 @@ CREATE TABLE IF NOT EXISTS broadcast_recipients (
 CREATE INDEX IF NOT EXISTS broadcast_recipients_status ON broadcast_recipients(broadcast_id,status,position);
 PRAGMA user_version = 2;
 `;
+export const broadcastLogSchema = `
+ALTER TABLE broadcast_recipients ADD COLUMN attempted_at INTEGER;
+CREATE TABLE IF NOT EXISTS broadcast_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ broadcast_id TEXT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+ at INTEGER NOT NULL,
+ type TEXT NOT NULL CHECK(type IN ('created','sent','uncertain','paused','resumed','cancelled','completed')),
+ position INTEGER, detail TEXT
+);
+CREATE INDEX IF NOT EXISTS broadcast_events_broadcast ON broadcast_events(broadcast_id,id);
+PRAGMA user_version = 3;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
-export const migrations = [schema, broadcastSchema];
+export const migrations = [schema, broadcastSchema, broadcastLogSchema];

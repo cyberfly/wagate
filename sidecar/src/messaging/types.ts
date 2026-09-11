@@ -63,7 +63,27 @@ export interface BroadcastRecipient {
   status: "pending" | "sending" | "sent" | "uncertain" | "cancelled";
   messageId: string | null;
   error: string | null;
+  /** When the send began; the only time known for an uncertain send. */
+  attemptedAt: number | null;
   sentAt: number | null;
+}
+export interface BroadcastEvent {
+  id: number;
+  at: number;
+  type:
+    | "created"
+    | "sent"
+    | "uncertain"
+    | "paused"
+    | "resumed"
+    | "cancelled"
+    | "completed";
+  /** The recipient a send outcome refers to. */
+  position: number | null;
+  label: string | null;
+  chatId: string | null;
+  /** Counts, a pause reason, or a failure reason, ready to show. */
+  detail: string | null;
 }
 export interface MessagePage {
   messages: Message[];

@@ -6,6 +6,7 @@ import type {
   Chat,
   TunnelState,
   Broadcast,
+  BroadcastEvent,
   BroadcastRecipient,
 } from "./api";
 const now = Date.now();
@@ -117,7 +118,9 @@ const broadcasts: {
     "total" | "sent" | "pending" | "uncertain" | "cancelled"
   >;
   recipients: BroadcastRecipient[];
+  events: BroadcastEvent[];
 }[] = [];
+let eventId = 0;
 function summary({ broadcast, recipients }: (typeof broadcasts)[number]) {
   const count = (...s: string[]) =>
     recipients.filter((r) => s.includes(r.status)).length;
@@ -130,6 +133,23 @@ function summary({ broadcast, recipients }: (typeof broadcasts)[number]) {
     cancelled: count("cancelled"),
   };
 }
+function record(
+  entry: (typeof broadcasts)[number],
+  type: BroadcastEvent["type"],
+  detail: string | null = null,
+  recipient?: BroadcastRecipient,
+) {
+  entry.events.push({
+    id: ++eventId,
+    at: Date.now(),
+    type,
+    position: recipient?.position ?? null,
+    label: recipient?.label ?? null,
+    chatId: recipient?.chatId ?? null,
+    detail,
+  });
+  entry.broadcast.updatedAt = Date.now();
+}
 // Sends one recipient per UI poll instead of waiting for real pacing.
 function advanceBroadcast() {
   const b = broadcasts.find((x) => x.broadcast.status === "running");
@@ -137,26 +157,39 @@ function advanceBroadcast() {
   const next = b.recipients.find((r) => r.status === "pending");
   if (next) {
     next.status = "sent";
+    next.attemptedAt = Date.now() - 400;
     next.sentAt = Date.now();
     next.messageId = crypto.randomUUID();
-  } else b.broadcast.status = "completed";
-  b.broadcast.updatedAt = Date.now();
+    record(b, "sent", null, next);
+  } else {
+    b.broadcast.status = "completed";
+    record(b, "completed", `${summary(b).sent} sent`);
+  }
 }
-function broadcastRequest(path: string, method: string, data: Record<string, unknown> | undefined) {
+function broadcastRequest(
+  path: string,
+  method: string,
+  data: Record<string, unknown> | undefined,
+) {
   if (path === "/internal/broadcasts" && method === "POST") {
     const now = Date.now();
+    const recipients = data?.recipients as {
+      to: string;
+      label: string;
+      text: string;
+    }[];
     const entry = {
       broadcast: {
         id: crypto.randomUUID(),
         name: String(data?.name),
-        status: "running" as const,
+        status: "running" as Broadcast["status"],
         minDelay: Number(data?.minDelay),
         maxDelay: Number(data?.maxDelay),
         error: null,
         createdAt: now,
         updatedAt: now,
       },
-      recipients: (data?.recipients as { to: string; label: string; text: string }[]).map(
+      recipients: recipients.map(
         (r, i): BroadcastRecipient => ({
           position: i + 1,
           chatId: r.to + "@s.whatsapp.net",
@@ -165,11 +198,14 @@ function broadcastRequest(path: string, method: string, data: Record<string, unk
           status: "pending",
           messageId: null,
           error: null,
+          attemptedAt: null,
           sentAt: null,
         }),
       ),
+      events: [],
     };
     broadcasts.unshift(entry);
+    record(entry, "created", `${recipients.length} recipients`);
     return summary(entry);
   }
   const [, , , id, action] = path.split("/");
@@ -177,14 +213,31 @@ function broadcastRequest(path: string, method: string, data: Record<string, unk
   if (!entry) throw new Error("Broadcast not found");
   const b = entry.broadcast;
   if (method === "DELETE") broadcasts.splice(broadcasts.indexOf(entry), 1);
-  else if (action === "pause") b.status = "paused";
-  else if (action === "resume") b.status = "running";
-  else if (action === "cancel") {
+  else if (action === "export")
+    return {
+      path: `~/Downloads/${b.name}-send-log.csv (preview: nothing saved)`,
+    };
+  else if (action === "pause") {
+    b.status = "paused";
+    record(entry, "paused");
+  } else if (action === "resume") {
+    b.status = "running";
+    record(entry, "resumed");
+  } else if (action === "cancel") {
     b.status = "cancelled";
+    let skipped = 0;
     for (const r of entry.recipients)
-      if (r.status === "pending") r.status = "cancelled";
-  } else return { broadcast: summary(entry), recipients: entry.recipients };
-  b.updatedAt = Date.now();
+      if (r.status === "pending") {
+        r.status = "cancelled";
+        skipped++;
+      }
+    record(entry, "cancelled", `${skipped} not sent`);
+  } else
+    return {
+      broadcast: summary(entry),
+      recipients: entry.recipients,
+      events: entry.events,
+    };
   return summary(entry);
 }
 export async function previewRequest(

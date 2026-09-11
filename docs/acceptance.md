@@ -18,6 +18,7 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] Broadcast a two-row CSV to consenting test recipients; each receives only their own personalised message, once, with the configured gap.
 - [ ] Pause a broadcast mid-way, confirm nothing more is sent, then resume and confirm the rest arrive.
 - [ ] Disconnect WhatsApp during a broadcast; it pauses with a visible reason and resumes after reconnecting.
+- [ ] The broadcast's send log shows each recipient's result and a timeline including the pause; **Save CSV** writes a file to Downloads that opens correctly in a spreadsheet.
 
 Recovery checks:
 

@@ -1,28 +1,56 @@
 import type { Database } from "bun:sqlite";
-import type { Broadcast, BroadcastRecipient } from "../messaging/types";
+import type {
+  Broadcast,
+  BroadcastEvent,
+  BroadcastRecipient,
+} from "../messaging/types";
 const summary = `SELECT b.id,b.name,b.status,b.min_delay AS minDelay,b.max_delay AS maxDelay,b.error,b.created_at AS createdAt,b.updated_at AS updatedAt,
  COUNT(*) AS total,SUM(r.status='sent') AS sent,SUM(r.status IN ('pending','sending')) AS pending,
  SUM(r.status='uncertain') AS uncertain,SUM(r.status='cancelled') AS cancelled
  FROM broadcasts b JOIN broadcast_recipients r ON r.broadcast_id=b.id`;
 const recipientColumns =
-  "position,chat_id AS chatId,label,text,status,message_id AS messageId,error,sent_at AS sentAt";
+  "position,chat_id AS chatId,label,text,status,message_id AS messageId,error,attempted_at AS attemptedAt,sent_at AS sentAt";
 export interface NewRecipient {
   chatId: string;
   label: string;
   text: string;
 }
+/**
+ * Every state change writes its log event in the same transaction, so the
+ * send log always matches what actually happened.
+ */
 export class BroadcastRepository {
   constructor(private db: Database) {
     // After a crash or quit: an in-flight send may have reached WhatsApp, and
     // nothing resumes sending until the user says so.
     db.transaction(() => {
-      db.query(
-        "UPDATE broadcast_recipients SET status='uncertain',error='Wagate stopped while sending' WHERE status='sending'",
-      ).run();
-      db.query(
-        "UPDATE broadcasts SET status='paused',error='Wagate restarted. Resume to continue.',updated_at=? WHERE status='running'",
-      ).run(Date.now());
+      const now = Date.now();
+      const inflight = db
+        .query(
+          "SELECT broadcast_id AS id,position FROM broadcast_recipients WHERE status='sending'",
+        )
+        .all() as { id: string; position: number }[];
+      for (const r of inflight)
+        this.finish(r.id, r.position, { error: "Wagate stopped while sending" });
+      const running = db
+        .query("SELECT id FROM broadcasts WHERE status='running'")
+        .all() as { id: string }[];
+      for (const b of running)
+        this.pause(b.id, "Wagate restarted. Resume to continue.", now);
     })();
+  }
+  private record(
+    id: string,
+    type: BroadcastEvent["type"],
+    detail: string | null = null,
+    position: number | null = null,
+    at = Date.now(),
+  ) {
+    this.db
+      .query(
+        "INSERT INTO broadcast_events(broadcast_id,at,type,position,detail) VALUES(?,?,?,?,?)",
+      )
+      .run(id, at, type, position, detail);
   }
   create(
     name: string,
@@ -41,7 +69,10 @@ export class BroadcastRepository {
       const insert = this.db.query(
         "INSERT INTO broadcast_recipients(broadcast_id,position,chat_id,label,text) VALUES(?,?,?,?,?)",
       );
-      recipients.forEach((r, i) => insert.run(id, i + 1, r.chatId, r.label, r.text));
+      recipients.forEach((r, i) =>
+        insert.run(id, i + 1, r.chatId, r.label, r.text),
+      );
+      this.record(id, "created", plural(recipients.length, "recipient"), null, now);
     })();
     return this.get(id)!;
   }
@@ -62,43 +93,86 @@ export class BroadcastRepository {
       )
       .all(id) as BroadcastRecipient[];
   }
+  /** Oldest first. */
+  events(id: string) {
+    return this.db
+      .query(
+        `SELECT e.id,e.at,e.type,e.position,e.detail,r.label,r.chat_id AS chatId FROM broadcast_events e
+         LEFT JOIN broadcast_recipients r ON r.broadcast_id=e.broadcast_id AND r.position=e.position
+         WHERE e.broadcast_id=? ORDER BY e.id`,
+      )
+      .all(id) as BroadcastEvent[];
+  }
   /** The broadcast currently allowed to send. At most one runs at a time. */
   running() {
     return this.db
-      .query(`${summary} WHERE b.status='running' GROUP BY b.id ORDER BY b.created_at LIMIT 1`)
+      .query(
+        `${summary} WHERE b.status='running' GROUP BY b.id ORDER BY b.created_at LIMIT 1`,
+      )
       .get() as Broadcast | null;
   }
-  private transition(id: string, from: string, to: string, error: string | null = null) {
+  private transition(
+    id: string,
+    from: string,
+    to: Broadcast["status"],
+    error: string | null,
+    at: number,
+  ) {
     return (
       this.db
         .query(
           `UPDATE broadcasts SET status=?,error=?,updated_at=? WHERE id=? AND status IN (${from})`,
         )
-        .run(to, error, Date.now(), id).changes === 1
+        .run(to, error, at, id).changes === 1
     );
   }
-  pause(id: string, error: string | null = null) {
-    return this.transition(id, "'running'", "paused", error);
+  /** `reason` is null when the user paused it. */
+  pause(id: string, reason: string | null = null, at = Date.now()) {
+    return this.db.transaction(() => {
+      if (!this.transition(id, "'running'", "paused", reason, at)) return false;
+      this.record(id, "paused", reason, null, at);
+      return true;
+    })();
   }
   resume(id: string) {
-    return this.transition(id, "'paused'", "running");
+    return this.db.transaction(() => {
+      const at = Date.now();
+      if (!this.transition(id, "'paused'", "running", null, at)) return false;
+      this.record(id, "resumed", null, null, at);
+      return true;
+    })();
   }
   complete(id: string) {
-    return this.transition(id, "'running'", "completed");
+    return this.db.transaction(() => {
+      const at = Date.now();
+      if (!this.transition(id, "'running'", "completed", null, at)) return false;
+      const b = this.get(id)!;
+      this.record(
+        id,
+        "completed",
+        `${b.sent} sent` + (b.uncertain ? `, ${b.uncertain} uncertain` : ""),
+        null,
+        at,
+      );
+      return true;
+    })();
   }
   cancel(id: string) {
     return this.db.transaction(() => {
-      if (!this.transition(id, "'running','paused'", "cancelled")) return false;
-      this.db
+      const at = Date.now();
+      if (!this.transition(id, "'running','paused'", "cancelled", null, at))
+        return false;
+      const skipped = this.db
         .query(
           "UPDATE broadcast_recipients SET status='cancelled' WHERE broadcast_id=? AND status='pending'",
         )
-        .run(id);
+        .run(id).changes;
+      this.record(id, "cancelled", `${skipped} not sent`, null, at);
       return true;
     })();
   }
   remove(id: string) {
-    // Bun counts the cascaded recipient rows in `changes` too.
+    // Bun counts the cascaded recipient and event rows in `changes` too.
     return (
       this.db
         .query(
@@ -115,13 +189,17 @@ export class BroadcastRepository {
           `SELECT ${recipientColumns} FROM broadcast_recipients WHERE broadcast_id=? AND status='pending' ORDER BY position LIMIT 1`,
         )
         .get(id) as BroadcastRecipient | null;
-      if (next)
-        this.db
-          .query(
-            "UPDATE broadcast_recipients SET status='sending' WHERE broadcast_id=? AND position=?",
-          )
-          .run(id, next.position);
-      return next;
+      if (!next) return null;
+      const at = Date.now();
+      this.db
+        .query(
+          "UPDATE broadcast_recipients SET status='sending',attempted_at=? WHERE broadcast_id=? AND position=?",
+        )
+        .run(at, id, next.position);
+      this.db
+        .query("UPDATE broadcasts SET updated_at=? WHERE id=?")
+        .run(at, id);
+      return { ...next, status: "sending" as const, attemptedAt: at };
     })();
   }
   finish(
@@ -129,21 +207,34 @@ export class BroadcastRepository {
     position: number,
     outcome: { messageId: string } | { error: string },
   ) {
-    const sent = "messageId" in outcome;
-    this.db
-      .query(
-        "UPDATE broadcast_recipients SET status=?,message_id=?,error=?,sent_at=? WHERE broadcast_id=? AND position=?",
-      )
-      .run(
-        sent ? "sent" : "uncertain",
-        sent ? outcome.messageId : null,
-        sent ? null : outcome.error,
-        sent ? Date.now() : null,
+    this.db.transaction(() => {
+      const at = Date.now(),
+        sent = "messageId" in outcome;
+      this.db
+        .query(
+          "UPDATE broadcast_recipients SET status=?,message_id=?,error=?,sent_at=? WHERE broadcast_id=? AND position=?",
+        )
+        .run(
+          sent ? "sent" : "uncertain",
+          sent ? outcome.messageId : null,
+          sent ? null : outcome.error,
+          sent ? at : null,
+          id,
+          position,
+        );
+      this.db
+        .query("UPDATE broadcasts SET updated_at=? WHERE id=?")
+        .run(at, id);
+      this.record(
         id,
+        sent ? "sent" : "uncertain",
+        sent ? null : outcome.error,
         position,
+        at,
       );
-    this.db
-      .query("UPDATE broadcasts SET updated_at=? WHERE id=?")
-      .run(Date.now(), id);
+    })();
   }
+}
+function plural(n: number, word: string) {
+  return `${n.toLocaleString("en")} ${word}${n === 1 ? "" : "s"}`;
 }
