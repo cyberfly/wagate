@@ -1,7 +1,14 @@
-import type { Chat, ConnectionState, ContactNames, Message } from "./types";
+import type {
+  Chat,
+  ConnectionState,
+  ContactNames,
+  Message,
+  MessageReceipt,
+} from "./types";
 export interface ProviderEvents {
   connection: (state: ConnectionState) => void;
   message: (message: Message, live: boolean) => void;
+  receipt: (receipt: MessageReceipt) => void;
   chat: (chat: Omit<Chat, "aiMode">) => void;
   contacts: (contacts: ContactNames[]) => void;
   error: (message: string) => void;

@@ -535,6 +535,8 @@ function BroadcastCard({
       </div>
       <small>
         {b.sent} of {b.total} sent
+        {b.sent ? ` · ${b.delivered} delivered` : ""}
+        {b.failed ? ` · ${b.failed} failed` : ""}
         {b.uncertain ? ` · ${b.uncertain} uncertain` : ""}
         {b.cancelled ? ` · ${b.cancelled} skipped` : ""} ·{" "}
         {new Date(b.createdAt).toLocaleString()}

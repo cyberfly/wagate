@@ -1,5 +1,39 @@
 import { test, expect } from "bun:test";
-import { normalizeMessage } from "../src/messaging/baileys/normalizer";
+import { WAMessageStatus } from "@whiskeysockets/baileys";
+import {
+  normalizeMessage,
+  normalizeReceipt,
+} from "../src/messaging/baileys/normalizer";
+test("reads rejections, deliveries and reads of our own messages", () => {
+  // Baileys reports a server ack carrying an error as status ERROR, with the
+  // code as the first stub parameter. The ack may come from the recipient's LID.
+  const own = { id: "3EB0A1", remoteJid: "1234567890@lid", fromMe: true };
+  expect(
+    normalizeReceipt({
+      key: own,
+      update: { status: WAMessageStatus.ERROR, messageStubParameters: ["463"] },
+    }),
+  ).toEqual({ providerMessageId: "3EB0A1", status: "failed", error: "463" });
+  expect(
+    normalizeReceipt({ key: own, update: { status: WAMessageStatus.ERROR } }),
+  ).toEqual({ providerMessageId: "3EB0A1", status: "failed" });
+  expect(
+    normalizeReceipt({ key: own, update: { status: WAMessageStatus.DELIVERY_ACK } }),
+  ).toMatchObject({ status: "delivered" });
+  expect(
+    normalizeReceipt({ key: own, update: { status: WAMessageStatus.PLAYED } }),
+  ).toMatchObject({ status: "read" });
+  // Pending and server acks say nothing new; others' messages are not ours.
+  expect(
+    normalizeReceipt({ key: own, update: { status: WAMessageStatus.SERVER_ACK } }),
+  ).toBeNull();
+  expect(
+    normalizeReceipt({
+      key: { ...own, fromMe: false },
+      update: { status: WAMessageStatus.READ },
+    }),
+  ).toBeNull();
+});
 const key = { id: "one", remoteJid: "123456789@s.whatsapp.net", fromMe: false };
 test("normalizes wrapped text and outgoing messages with timestamps", () => {
   expect(

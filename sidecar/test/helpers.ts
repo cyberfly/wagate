@@ -49,8 +49,15 @@ export class FakeProvider implements MessagingProvider {
     return this.state;
   }
   async sendText(chatId: string, text: string) {
-    const id = crypto.randomUUID();
-    const m: Message = { ...incoming(id), chatId, text, direction: "outgoing" };
+    const id = crypto.randomUUID().replace(/-/g, "").toUpperCase();
+    // Ids take the Baileys provider's shape, so receipts can find them.
+    const m: Message = {
+      ...incoming(`whatsapp:${chatId}:${id}`),
+      providerMessageId: id,
+      chatId,
+      text,
+      direction: "outgoing",
+    };
     this.sent.push(m);
     return m;
   }

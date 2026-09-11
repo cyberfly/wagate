@@ -10,7 +10,11 @@ import type { MessagingProvider, ProviderEvents } from "../messaging-provider";
 import type { ConnectionState } from "../types";
 import { Vault } from "../../security/vault";
 import { createAuth } from "./auth";
-import { normalizeContacts, normalizeMessage } from "./normalizer";
+import {
+  normalizeContacts,
+  normalizeMessage,
+  normalizeReceipt,
+} from "./normalizer";
 export class BaileysProvider implements MessagingProvider {
   private socket?: WASocket;
   private state: ConnectionState = { status: "disconnected" };
@@ -155,6 +159,19 @@ export class BaileysProvider implements MessagingProvider {
             if (message) this.events.message(message, type === "notify");
           } catch {
             this.events.error("Could not store a WhatsApp message");
+          }
+        }
+      });
+      // sendMessage resolves once the message is written to the socket. Only
+      // these updates say whether WhatsApp took it and whether it arrived.
+      socket.ev.on("messages.update", (updates) => {
+        if (!active()) return;
+        for (const update of updates) {
+          try {
+            const receipt = normalizeReceipt(update);
+            if (receipt) this.events.receipt(receipt);
+          } catch {
+            this.events.error("Could not record a message receipt");
           }
         }
       });

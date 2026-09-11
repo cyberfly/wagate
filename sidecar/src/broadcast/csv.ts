@@ -150,6 +150,9 @@ export const recipientStatus: Record<BroadcastRecipient["status"], string> = {
   pending: "Waiting",
   sending: "Sending",
   sent: "Sent",
+  delivered: "Delivered",
+  read: "Read",
+  failed: "Failed",
   uncertain: "Uncertain",
   cancelled: "Skipped",
 };

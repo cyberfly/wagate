@@ -6,18 +6,34 @@ import {
   type BroadcastRecipient,
 } from "../lib/api";
 import { recipientStatus, sendLogCsv } from "../../sidecar/src/broadcast/csv";
-type Filter = "all" | "sent" | "uncertain" | "pending" | "cancelled";
+type Filter =
+  | "all"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed"
+  | "uncertain"
+  | "pending"
+  | "cancelled";
 const filters: [Filter, string][] = [
   ["all", "All"],
   ["sent", "Sent"],
+  ["delivered", "Delivered"],
+  ["read", "Read"],
+  ["failed", "Failed"],
   ["uncertain", "Uncertain"],
   ["pending", "Waiting"],
   ["cancelled", "Skipped"],
 ];
+// Like WhatsApp's ticks, each step includes the later ones: a read message
+// was also delivered and sent. The counts then match the summary line.
+const includes: Partial<Record<Filter, BroadcastRecipient["status"][]>> = {
+  sent: ["sent", "delivered", "read"],
+  delivered: ["delivered", "read"],
+  pending: ["pending", "sending"],
+};
 const matches = (filter: Filter, r: BroadcastRecipient) =>
-  filter === "all" ||
-  r.status === filter ||
-  (filter === "pending" && r.status === "sending");
+  filter === "all" || (includes[filter] ?? [filter]).includes(r.status);
 /** Time of day, with the date when it is not today. */
 function when(ms: number | null) {
   if (!ms) return "";
@@ -39,6 +55,8 @@ function describe(e: BroadcastEvent) {
       return `Started · ${e.detail}`;
     case "sent":
       return `Sent to ${e.label} · ${number(e.chatId)}`;
+    case "failed":
+      return `Rejected for ${e.label} · ${e.detail}`;
     case "uncertain":
       return `Delivery unknown for ${e.label} · ${e.detail}`;
     case "paused":
@@ -99,8 +117,9 @@ export function BroadcastLog({
           <span className="eyebrow">SEND LOG</span>
           <h3>{b.name}</h3>
           <small>
-            Started {when(b.createdAt)} · {b.sent} sent · {b.uncertain}{" "}
-            uncertain · {b.pending} waiting · {b.cancelled} skipped
+            Started {when(b.createdAt)} · {b.sent} sent · {b.delivered}{" "}
+            delivered · {b.failed} failed · {b.uncertain} uncertain ·{" "}
+            {b.pending} waiting · {b.cancelled} skipped
           </small>
         </div>
         <div className="button-row">

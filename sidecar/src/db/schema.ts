@@ -70,10 +70,41 @@ INSERT INTO contacts(id,imported_name,updated_at)
  ON CONFLICT(id) DO UPDATE SET imported_name=excluded.imported_name,updated_at=excluded.updated_at;
 PRAGMA user_version = 4;
 `;
+// WhatsApp can reject a message after it left the socket, and later confirms
+// delivery and reading. SQLite cannot widen a CHECK constraint in place, so
+// both tables are rebuilt with their rows, ids and indexes.
+export const deliverySchema = `
+CREATE TABLE broadcast_recipients_next (
+ broadcast_id TEXT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE, position INTEGER NOT NULL,
+ chat_id TEXT NOT NULL, label TEXT NOT NULL, text TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','delivered','read','failed','uncertain','cancelled')),
+ message_id TEXT, error TEXT, sent_at INTEGER, attempted_at INTEGER,
+ PRIMARY KEY(broadcast_id, position)
+);
+INSERT INTO broadcast_recipients_next(broadcast_id,position,chat_id,label,text,status,message_id,error,sent_at,attempted_at)
+ SELECT broadcast_id,position,chat_id,label,text,status,message_id,error,sent_at,attempted_at FROM broadcast_recipients;
+DROP TABLE broadcast_recipients;
+ALTER TABLE broadcast_recipients_next RENAME TO broadcast_recipients;
+CREATE INDEX broadcast_recipients_status ON broadcast_recipients(broadcast_id,status,position);
+CREATE TABLE broadcast_events_next (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ broadcast_id TEXT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+ at INTEGER NOT NULL,
+ type TEXT NOT NULL CHECK(type IN ('created','sent','failed','uncertain','paused','resumed','cancelled','completed')),
+ position INTEGER, detail TEXT
+);
+INSERT INTO broadcast_events_next(id,broadcast_id,at,type,position,detail)
+ SELECT id,broadcast_id,at,type,position,detail FROM broadcast_events;
+DROP TABLE broadcast_events;
+ALTER TABLE broadcast_events_next RENAME TO broadcast_events;
+CREATE INDEX broadcast_events_broadcast ON broadcast_events(broadcast_id,id);
+PRAGMA user_version = 5;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
   broadcastSchema,
   broadcastLogSchema,
   contactNamesSchema,
+  deliverySchema,
 ];

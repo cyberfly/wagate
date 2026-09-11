@@ -2,7 +2,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { MessagingProvider } from "../messaging/messaging-provider";
-import type { Broadcast } from "../messaging/types";
+import type { Broadcast, MessageReceipt } from "../messaging/types";
 import { resolveChatId, MessageService } from "../messages/message-service";
 import { EventBus } from "../events/event-bus";
 import { BroadcastRepository } from "./broadcast-repository";
@@ -18,6 +18,23 @@ export interface BroadcastInput {
 export function randomPace(b: Pick<Broadcast, "minDelay" | "maxDelay">) {
   return (b.minDelay + Math.random() * (b.maxDelay - b.minDelay)) * 1000;
 }
+/**
+ * Why WhatsApp refused a message. 463 is what an account gets when WhatsApp
+ * stops it from starting new chats, typically after it flags bulk messages;
+ * every further attempt counts against it.
+ */
+function rejection(code?: string) {
+  return code === "463"
+    ? {
+        note: "WhatsApp refused to start this chat (error 463). The account may be restricted from messaging new contacts.",
+        advice:
+          "WhatsApp is refusing new chats from this account. Sending more can extend the restriction: wait several hours, then resume.",
+      }
+    : {
+        note: `WhatsApp rejected this message${code ? ` (error ${code})` : ""}.`,
+        advice: "Check that chat on your phone, then resume to continue with the rest.",
+      };
+}
 function downloads() {
   const dir = join(homedir(), "Downloads");
   return existsSync(dir) ? dir : homedir();
@@ -28,6 +45,9 @@ function downloads() {
  *
  * A send that throws may still have reached WhatsApp, so its recipient is
  * marked uncertain, never retried, and the broadcast pauses for the user.
+ * A send that returns has only been written to the socket: receipts later
+ * mark it delivered or read, or failed when WhatsApp rejects it, which also
+ * pauses the broadcast.
  */
 export class BroadcastService {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -148,6 +168,24 @@ export class BroadcastService {
     if (!this.repository.remove(id))
       throw new Error("Broadcast must be finished or cancelled before removal");
     this.updated(id);
+  }
+  /** WhatsApp's later word on any message we sent; most are not broadcasts'. */
+  receipt({ providerMessageId, status, error }: MessageReceipt) {
+    const reason = status === "failed" ? rejection(error) : null;
+    const hit = this.repository.receipt(
+      providerMessageId,
+      status,
+      reason?.note ?? null,
+    );
+    if (!hit) return;
+    this.updated(hit.broadcastId);
+    // The rejection lands a moment after the send, well inside the gap
+    // before the next one, so pausing here stops the rest.
+    if (reason)
+      this.halt(
+        hit.broadcastId,
+        `WhatsApp rejected the message to ${hit.label}. ${reason.advice}`,
+      );
   }
   close() {
     this.closed = true;

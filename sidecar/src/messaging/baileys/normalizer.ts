@@ -1,10 +1,41 @@
 import {
   normalizeMessageContent,
   jidNormalizedUser,
+  WAMessageStatus,
   type Contact,
   type WAMessage,
+  type WAMessageUpdate,
 } from "@whiskeysockets/baileys";
-import type { ContactNames, Message } from "../types";
+import type { ContactNames, Message, MessageReceipt } from "../types";
+/**
+ * Our message's fate after it left the socket: a rejection in the server's
+ * ack (Baileys reports it as status ERROR), then delivery and read receipts.
+ * The chat id is left out on purpose: WhatsApp may answer from the
+ * recipient's LID for a message addressed to their phone number.
+ */
+export function normalizeReceipt({
+  key,
+  update,
+}: WAMessageUpdate): MessageReceipt | null {
+  if (!key.fromMe || !key.id) return null;
+  switch (update.status) {
+    case WAMessageStatus.ERROR: {
+      const code = update.messageStubParameters?.[0];
+      return {
+        providerMessageId: key.id,
+        status: "failed",
+        ...(code ? { error: String(code) } : {}),
+      };
+    }
+    case WAMessageStatus.DELIVERY_ACK:
+      return { providerMessageId: key.id, status: "delivered" };
+    case WAMessageStatus.READ:
+    case WAMessageStatus.PLAYED:
+      return { providerMessageId: key.id, status: "read" };
+    default:
+      return null;
+  }
+}
 /**
  * Names from contact sync and message push names. A person can be known by a
  * phone-number id and a LID; the names are stored under both so either chat

@@ -5,7 +5,8 @@ import type {
   BroadcastRecipient,
 } from "../messaging/types";
 const summary = `SELECT b.id,b.name,b.status,b.min_delay AS minDelay,b.max_delay AS maxDelay,b.error,b.created_at AS createdAt,b.updated_at AS updatedAt,
- COUNT(*) AS total,SUM(r.status='sent') AS sent,SUM(r.status IN ('pending','sending')) AS pending,
+ COUNT(*) AS total,SUM(r.status IN ('sent','delivered','read')) AS sent,SUM(r.status IN ('delivered','read')) AS delivered,
+ SUM(r.status='failed') AS failed,SUM(r.status IN ('pending','sending')) AS pending,
  SUM(r.status='uncertain') AS uncertain,SUM(r.status='cancelled') AS cancelled
  FROM broadcasts b JOIN broadcast_recipients r ON r.broadcast_id=b.id`;
 const recipientColumns =
@@ -150,7 +151,9 @@ export class BroadcastRepository {
       this.record(
         id,
         "completed",
-        `${b.sent} sent` + (b.uncertain ? `, ${b.uncertain} uncertain` : ""),
+        `${b.sent} sent` +
+          (b.failed ? `, ${b.failed} failed` : "") +
+          (b.uncertain ? `, ${b.uncertain} uncertain` : ""),
         null,
         at,
       );
@@ -232,6 +235,51 @@ export class BroadcastRepository {
         position,
         at,
       );
+    })();
+  }
+  /**
+   * Applies WhatsApp's later word on a sent message and returns the recipient
+   * it belonged to, or null when it was no broadcast's. Statuses only move
+   * forward; a delivery receipt overrules an earlier rejection.
+   */
+  receipt(
+    providerMessageId: string,
+    status: "failed" | "delivered" | "read",
+    error: string | null = null,
+  ) {
+    const from = {
+      failed: "'sent'",
+      delivered: "'sent','failed'",
+      read: "'sent','delivered','failed'",
+    }[status];
+    // Stored message ids are `whatsapp:<chat id>:<provider id>`, and a
+    // receipt may name the recipient's LID rather than the chat we sent to.
+    const suffix = ":" + providerMessageId;
+    return this.db.transaction(() => {
+      const hit = this.db
+        .query(
+          `SELECT broadcast_id AS broadcastId,position,label FROM broadcast_recipients
+           WHERE status IN (${from}) AND substr(message_id,-length(?))=? LIMIT 1`,
+        )
+        .get(suffix, suffix) as {
+        broadcastId: string;
+        position: number;
+        label: string;
+      } | null;
+      if (!hit) return null;
+      const at = Date.now();
+      this.db
+        .query(
+          "UPDATE broadcast_recipients SET status=?,error=? WHERE broadcast_id=? AND position=?",
+        )
+        .run(status, error, hit.broadcastId, hit.position);
+      this.db
+        .query("UPDATE broadcasts SET updated_at=? WHERE id=?")
+        .run(at, hit.broadcastId);
+      // Deliveries and reads would drown the timeline; the table shows them.
+      if (status === "failed")
+        this.record(hit.broadcastId, "failed", error, hit.position, at);
+      return hit;
     })();
   }
 }

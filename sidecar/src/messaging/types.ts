@@ -38,6 +38,16 @@ export interface Message {
   text?: string;
   timestamp: number;
 }
+/**
+ * What WhatsApp said about one of our messages after it left the socket.
+ * A send only means the message was written; WhatsApp can still reject it.
+ */
+export interface MessageReceipt {
+  providerMessageId: string;
+  status: "failed" | "delivered" | "read";
+  /** WhatsApp's error code for a rejection, such as "463". */
+  error?: string;
+}
 export interface Draft {
   id: string;
   chatId: string;
@@ -58,7 +68,12 @@ export interface Broadcast {
   createdAt: number;
   updatedAt: number;
   total: number;
+  /** Accepted by WhatsApp, including those since delivered or read. */
   sent: number;
+  /** Reached the recipient's phone, including those since read. */
+  delivered: number;
+  /** Rejected by WhatsApp after the send. */
+  failed: number;
   pending: number;
   uncertain: number;
   cancelled: number;
@@ -68,7 +83,15 @@ export interface BroadcastRecipient {
   chatId: string;
   label: string;
   text: string;
-  status: "pending" | "sending" | "sent" | "uncertain" | "cancelled";
+  status:
+    | "pending"
+    | "sending"
+    | "sent"
+    | "delivered"
+    | "read"
+    | "failed"
+    | "uncertain"
+    | "cancelled";
   messageId: string | null;
   error: string | null;
   /** When the send began; the only time known for an uncertain send. */
@@ -81,6 +104,7 @@ export interface BroadcastEvent {
   type:
     | "created"
     | "sent"
+    | "failed"
     | "uncertain"
     | "paused"
     | "resumed"

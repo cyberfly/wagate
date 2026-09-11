@@ -137,7 +137,108 @@ test("older databases upgrade to the current version without losing data", () =>
   });
   expect(repository.events("b")).toEqual([]);
   v2.close();
+  // Rebuilding the recipient and event tables keeps every row and event id.
+  const v4 = upgrade(
+    "v4.sqlite",
+    migrations.slice(0, 4),
+    `INSERT INTO broadcasts VALUES('b','Old','completed',5,10,NULL,1,1);
+     INSERT INTO broadcast_recipients(broadcast_id,position,chat_id,label,text,status,message_id,sent_at,attempted_at)
+       VALUES('b',1,'60120000001@s.whatsapp.net','Aina','Hi','sent','whatsapp:60120000001@s.whatsapp.net:3EB0AA',2,1);
+     INSERT INTO broadcast_events(id,broadcast_id,at,type) VALUES(7,'b',1,'created')`,
+  );
+  const upgraded = new BroadcastRepository(v4);
+  expect(upgraded.recipients("b")[0]).toMatchObject({
+    status: "sent",
+    attemptedAt: 1,
+    sentAt: 2,
+  });
+  expect(upgraded.receipt("3EB0AA", "failed", "Rejected")).toMatchObject({
+    broadcastId: "b",
+    position: 1,
+  });
+  expect(upgraded.get("b")).toMatchObject({ sent: 0, failed: 1 });
+  expect(upgraded.events("b").map((e) => [e.id, e.type])).toEqual([
+    [7, "created"],
+    [8, "failed"],
+  ]);
+  v4.close();
   rmSync(dir, { recursive: true });
+});
+test("WhatsApp rejecting a sent message marks it failed and pauses the broadcast", async () => {
+  const s = setup();
+  const errors: unknown[] = [];
+  s.events.subscribe((e) => e.type === "broadcast.error" && errors.push(e.data));
+  // As WhatsApp does: the send resolves, then the server's ack rejects it.
+  const send = s.provider.sendText.bind(s.provider);
+  s.provider.sendText = async (chatId, text) => {
+    const message = await send(chatId, text);
+    if (s.provider.sent.length === 2)
+      setTimeout(() =>
+        s.broadcasts.receipt({
+          providerMessageId: message.providerMessageId,
+          status: "failed",
+          error: "463",
+        }),
+      );
+    return message;
+  };
+  const b = s.broadcasts.create(input(3));
+  await until(() => s.broadcasts.get(b.id).broadcast.status === "paused");
+  const paused = s.broadcasts.get(b.id);
+  expect(paused.recipients.map((r) => r.status)).toEqual([
+    "sent",
+    "failed",
+    "pending",
+  ]);
+  expect(paused.recipients[1].error).toContain("error 463");
+  expect(paused.broadcast).toMatchObject({ sent: 1, failed: 1, pending: 1 });
+  expect(paused.broadcast.error).toStartWith(
+    "WhatsApp rejected the message to Person 2. WhatsApp is refusing new chats",
+  );
+  expect(errors).toHaveLength(1);
+  expect(paused.events.map((e) => [e.type, e.label])).toEqual([
+    ["created", null],
+    ["sent", "Person 1"],
+    ["sent", "Person 2"],
+    ["failed", "Person 2"],
+    ["paused", null],
+  ]);
+  // A failed message is never re-sent; resuming carries on with the rest.
+  s.broadcasts.resume(b.id);
+  await until(() => s.broadcasts.get(b.id).broadcast.status === "completed");
+  expect(s.provider.sent).toHaveLength(3);
+  expect(s.broadcasts.get(b.id).events.at(-1)?.detail).toBe("2 sent, 1 failed");
+  s.close();
+});
+test("delivery and read receipts move sent messages forward, never back", async () => {
+  const s = setup();
+  const b = s.broadcasts.create(input(3));
+  await until(() => s.broadcasts.get(b.id).broadcast.status === "completed");
+  const [one, two] = s.provider.sent.map((m) => m.providerMessageId);
+  s.broadcasts.receipt({ providerMessageId: one, status: "read" });
+  s.broadcasts.receipt({ providerMessageId: two, status: "delivered" });
+  // Late or out-of-order receipts cannot undo a later state.
+  s.broadcasts.receipt({ providerMessageId: one, status: "delivered" });
+  s.broadcasts.receipt({ providerMessageId: two, status: "failed", error: "479" });
+  // Receipts for messages outside any broadcast are ignored.
+  s.broadcasts.receipt({ providerMessageId: "3EB0FFFF", status: "failed" });
+  const { broadcast, recipients, events } = s.broadcasts.get(b.id);
+  expect(recipients.map((r) => r.status)).toEqual(["read", "delivered", "sent"]);
+  expect(broadcast).toMatchObject({ sent: 3, delivered: 2, failed: 0 });
+  expect(events.some((e) => e.type === "failed")).toBe(false);
+  // A delivery overrules an earlier rejection and clears its note.
+  const three = s.provider.sent[2].providerMessageId;
+  s.broadcasts.receipt({ providerMessageId: three, status: "failed" });
+  expect(s.broadcasts.get(b.id).recipients[2]).toMatchObject({
+    status: "failed",
+    error: "WhatsApp rejected this message.",
+  });
+  s.broadcasts.receipt({ providerMessageId: three, status: "delivered" });
+  expect(s.broadcasts.get(b.id).recipients[2]).toMatchObject({
+    status: "delivered",
+    error: null,
+  });
+  s.close();
 });
 test("a broadcast sends each message once, in order, through the message service", async () => {
   const s = setup();

@@ -47,6 +47,11 @@ const provider = new BaileysProvider(vault, {
     if (state.status === "connected") resyncContactsOnce();
   },
   message: (message, live) => sender.receive(message, live),
+  receipt: (receipt) => {
+    if (receipt.status === "failed")
+      log("error", "whatsapp.message.rejected", { code: receipt.error ?? "none" });
+    broadcasts.receipt(receipt);
+  },
   chat: (chat) => {
     chats.upsert(chat);
     events.publish("chat.updated", { id: chat.id });

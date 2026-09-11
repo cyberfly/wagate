@@ -962,16 +962,25 @@ footer {
   border-color: #9cc4a6;
   box-shadow: 0 0 0 1px #9cc4a6;
 }
-.state-sent {
+.state-sent,
+.state-delivered,
+.state-read {
   color: #4e8356;
 }
-.state-uncertain {
+.state-uncertain,
+.state-failed {
   color: #b3765e;
 }
 .recipients-table td.state-sent {
   color: #4e8356;
 }
-.recipients-table td.state-uncertain {
+.recipients-table td.state-delivered,
+.recipients-table td.state-read {
+  color: #4e8356;
+  font-weight: 600;
+}
+.recipients-table td.state-uncertain,
+.recipients-table td.state-failed {
   color: #b3765e;
   font-weight: 600;
 }
@@ -1068,6 +1077,7 @@ footer {
   font-variant-numeric: tabular-nums;
 }
 .timeline .event-uncertain span,
+.timeline .event-failed span,
 .timeline .event-paused span {
   color: #b3765e;
 }

@@ -115,7 +115,13 @@ let tunnel: TunnelState = {
 const broadcasts: {
   broadcast: Omit<
     Broadcast,
-    "total" | "sent" | "pending" | "uncertain" | "cancelled"
+    | "total"
+    | "sent"
+    | "delivered"
+    | "failed"
+    | "pending"
+    | "uncertain"
+    | "cancelled"
   >;
   recipients: BroadcastRecipient[];
   events: BroadcastEvent[];
@@ -127,7 +133,9 @@ function summary({ broadcast, recipients }: (typeof broadcasts)[number]) {
   return {
     ...broadcast,
     total: recipients.length,
-    sent: count("sent"),
+    sent: count("sent", "delivered", "read"),
+    delivered: count("delivered", "read"),
+    failed: count("failed"),
     pending: count("pending", "sending"),
     uncertain: count("uncertain"),
     cancelled: count("cancelled"),
