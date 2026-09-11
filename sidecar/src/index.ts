@@ -16,6 +16,8 @@ import { OpenRouterProvider } from "./ai/openrouter";
 import { DraftRepository } from "./ai/draft-repository";
 import { CopilotService } from "./ai/copilot-service";
 import { TunnelService } from "./tunnel/tunnel-service";
+import { BroadcastRepository } from "./broadcast/broadcast-repository";
+import { BroadcastService } from "./broadcast/broadcast-service";
 process.umask(0o077);
 const port = Number(process.env.WAGATE_PORT || 8787);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
@@ -66,6 +68,12 @@ const copilot = new CopilotService(
   settings,
   events,
 );
+const broadcasts = new BroadcastService(
+  new BroadcastRepository(db),
+  sender,
+  provider,
+  events,
+);
 const desktopToken = process.env.WAGATE_DESKTOP_TOKEN || "";
 delete process.env.WAGATE_DESKTOP_TOKEN;
 const databaseHealthy = () => {
@@ -87,6 +95,7 @@ const services = {
   vault,
   drafts,
   copilot,
+  broadcasts,
   port,
   databaseHealthy,
   log,
@@ -124,6 +133,7 @@ const shutdown = async () => {
   if (stopping) return;
   stopping = true;
   copilot.close();
+  broadcasts.close();
   tunnel.close();
   server.stop(true);
   await provider.disconnect();

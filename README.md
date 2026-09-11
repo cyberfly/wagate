@@ -1,6 +1,6 @@
 # Wagate
 
-A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus optional Cloudflare Tunnel publishing. Autopilot, webhooks, MCP, multiple accounts, and media processing remain later milestones.
+A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus optional Cloudflare Tunnel publishing and CSV broadcasts. Autopilot, webhooks, MCP, multiple accounts, and media processing remain later milestones.
 
 ## Screenshots
 
@@ -107,6 +107,26 @@ At least one active API key is required before the tunnel starts — the address
 
 Quick-tunnel caveats, all from Cloudflare: the address changes on every start, `trycloudflare.com` buffers `text/event-stream` so `GET /v1/events` will not stream through it (poll the other endpoints instead), concurrency is capped at 200 requests, and Cloudflare positions it as a debug aid rather than a production endpoint. For a stable hostname and Cloudflare Access policies, run a named tunnel yourself against `127.0.0.1:8787`.
 
+## Broadcast from a CSV
+
+**Broadcast** sends one personalised message to every row of a CSV, from your own number, one at a time.
+
+1. Choose a CSV. The first line names the columns; comma, semicolon, and tab separators all work, and quoted cells may span lines (as in ticketing exports). Up to 1,000 rows per broadcast.
+2. Check the **Phone number column** (detected automatically for headers such as `Phone`, `Mobile`, or `WhatsApp`). Numbers may include `+`, spaces, dashes, or brackets. Local numbers starting with `0` need a **Country code**, such as `60`.
+3. Write the message with placeholders: `{{First Name}}` fills from that column (case-insensitive), and `{{Website|none}}` uses `none` when the cell is empty. Click a column chip to insert it.
+4. Review each person’s message in the preview and the recipients table. Rows with an invalid number, a duplicate number, or an empty message are left out automatically; untick any row to leave it out yourself. A placeholder that matches no column blocks sending.
+5. **Review and send**, then confirm.
+
+Messages go out with a random gap, 10–20 seconds by default and 5–600 seconds allowed. Sending many near-identical messages quickly is a common reason WhatsApp restricts a number, so keep the gap generous and send only to people who expect to hear from you. Only one broadcast sends at a time, and Wagate must stay open.
+
+Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, **Cancel**, and a per-recipient list. Sent messages also appear in the inbox. Safety rules follow the rest of Wagate:
+
+- If WhatsApp disconnects, the broadcast pauses before the next send; reconnect and **Resume**.
+- If a send fails, the delivery state is unknown. That recipient is marked **uncertain** and never retried, and the broadcast pauses so you can check your phone before resuming with the rest.
+- Quitting or restarting Wagate pauses a running broadcast. It never resumes by itself, and a send that was in flight becomes uncertain.
+
+Broadcasts are desktop-only (`/internal/broadcasts`); API keys and the Cloudflare tunnel cannot start one. Rendered messages are stored in SQLite alongside other message text.
+
 ## Copilot
 
 1. Save an OpenRouter key, model ID, instructions, and context size in **AI Copilot**.
@@ -126,10 +146,10 @@ Only selected recent chat context goes to OpenRouter: default 20 messages, confi
 
 Desktop data uses Tauri’s app-data directory, normally `~/Library/Application Support/com.wagate.desktop/` on macOS:
 
-- `wagate.sqlite`: chats, messages, settings, hashed API keys, drafts, encrypted secrets.
+- `wagate.sqlite`: chats, messages, settings, hashed API keys, drafts, broadcasts, encrypted secrets.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and a versioned transactional initial migration. Accounts, contacts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables to existing databases. Accounts, contacts, webhooks, and AI-profile tables reserve space for later milestones.
 
 WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere). There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 

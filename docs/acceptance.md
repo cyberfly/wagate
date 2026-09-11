@@ -15,6 +15,10 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] Send a coding or essay request from the other phone: no draft is generated, an alert names the reason, and OpenRouter usage does not increase.
 - [ ] Clear **Keep Copilot to chat replies**, resend the same request, and confirm a draft is generated again.
 
+- [ ] Broadcast a two-row CSV to consenting test recipients; each receives only their own personalised message, once, with the configured gap.
+- [ ] Pause a broadcast mid-way, confirm nothing more is sent, then resume and confirm the rest arrive.
+- [ ] Disconnect WhatsApp during a broadcast; it pauses with a visible reason and resumes after reconnecting.
+
 Recovery checks:
 
 - [ ] QR expiry refreshes or gives a visible retry state.

@@ -27,3 +27,22 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 PRAGMA user_version = 1;
 `;
+export const broadcastSchema = `
+CREATE TABLE IF NOT EXISTS broadcasts (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('running','paused','completed','cancelled')),
+ min_delay INTEGER NOT NULL, max_delay INTEGER NOT NULL, error TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS broadcast_recipients (
+ broadcast_id TEXT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE, position INTEGER NOT NULL,
+ chat_id TEXT NOT NULL, label TEXT NOT NULL, text TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sending','sent','uncertain','cancelled')),
+ message_id TEXT, error TEXT, sent_at INTEGER,
+ PRIMARY KEY(broadcast_id, position)
+);
+CREATE INDEX IF NOT EXISTS broadcast_recipients_status ON broadcast_recipients(broadcast_id,status,position);
+PRAGMA user_version = 2;
+`;
+/** Applied in order; entry N moves the database from version N to N+1. */
+export const migrations = [schema, broadcastSchema];

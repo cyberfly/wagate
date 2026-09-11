@@ -1,5 +1,13 @@
 // Development-only fixture. Dynamically imported only in Vite preview mode.
-import type { Snapshot, Message, Draft, Chat, TunnelState } from "./api";
+import type {
+  Snapshot,
+  Message,
+  Draft,
+  Chat,
+  TunnelState,
+  Broadcast,
+  BroadcastRecipient,
+} from "./api";
 const now = Date.now();
 const chats: Chat[] = [
   {
@@ -103,6 +111,82 @@ let tunnel: TunnelState = {
   supported: true,
   progress: null,
 };
+const broadcasts: {
+  broadcast: Omit<
+    Broadcast,
+    "total" | "sent" | "pending" | "uncertain" | "cancelled"
+  >;
+  recipients: BroadcastRecipient[];
+}[] = [];
+function summary({ broadcast, recipients }: (typeof broadcasts)[number]) {
+  const count = (...s: string[]) =>
+    recipients.filter((r) => s.includes(r.status)).length;
+  return {
+    ...broadcast,
+    total: recipients.length,
+    sent: count("sent"),
+    pending: count("pending", "sending"),
+    uncertain: count("uncertain"),
+    cancelled: count("cancelled"),
+  };
+}
+// Sends one recipient per UI poll instead of waiting for real pacing.
+function advanceBroadcast() {
+  const b = broadcasts.find((x) => x.broadcast.status === "running");
+  if (!b) return;
+  const next = b.recipients.find((r) => r.status === "pending");
+  if (next) {
+    next.status = "sent";
+    next.sentAt = Date.now();
+    next.messageId = crypto.randomUUID();
+  } else b.broadcast.status = "completed";
+  b.broadcast.updatedAt = Date.now();
+}
+function broadcastRequest(path: string, method: string, data: Record<string, unknown> | undefined) {
+  if (path === "/internal/broadcasts" && method === "POST") {
+    const now = Date.now();
+    const entry = {
+      broadcast: {
+        id: crypto.randomUUID(),
+        name: String(data?.name),
+        status: "running" as const,
+        minDelay: Number(data?.minDelay),
+        maxDelay: Number(data?.maxDelay),
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      recipients: (data?.recipients as { to: string; label: string; text: string }[]).map(
+        (r, i): BroadcastRecipient => ({
+          position: i + 1,
+          chatId: r.to + "@s.whatsapp.net",
+          label: r.label || r.to,
+          text: r.text,
+          status: "pending",
+          messageId: null,
+          error: null,
+          sentAt: null,
+        }),
+      ),
+    };
+    broadcasts.unshift(entry);
+    return summary(entry);
+  }
+  const [, , , id, action] = path.split("/");
+  const entry = broadcasts.find((b) => b.broadcast.id === id);
+  if (!entry) throw new Error("Broadcast not found");
+  const b = entry.broadcast;
+  if (method === "DELETE") broadcasts.splice(broadcasts.indexOf(entry), 1);
+  else if (action === "pause") b.status = "paused";
+  else if (action === "resume") b.status = "running";
+  else if (action === "cancel") {
+    b.status = "cancelled";
+    for (const r of entry.recipients)
+      if (r.status === "pending") r.status = "cancelled";
+  } else return { broadcast: summary(entry), recipients: entry.recipients };
+  b.updatedAt = Date.now();
+  return summary(entry);
+}
 export async function previewRequest(
   path: string,
   method: string,
@@ -110,7 +194,10 @@ export async function previewRequest(
 ): Promise<unknown> {
   const url = new URL(path, "http://preview.local");
   const data = body as Record<string, unknown> | undefined;
+  if (url.pathname.startsWith("/internal/broadcasts"))
+    return broadcastRequest(url.pathname, method, data);
   if (url.pathname === "/internal/snapshot") {
+    advanceBroadcast();
     const id = url.searchParams.get("chatId");
     return {
       health: {
@@ -125,6 +212,7 @@ export async function previewRequest(
       drafts: drafts.filter((d) => d.chatId === id && d.status === "pending"),
       processing: [],
       tunnel,
+      broadcasts: broadcasts.map(summary),
       alerts: [],
     } satisfies Snapshot;
   }

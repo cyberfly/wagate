@@ -5,23 +5,34 @@ import { Connection } from "./components/Connection";
 import { Inbox } from "./components/Inbox";
 import { Settings } from "./components/Settings";
 import { ApiAccess } from "./components/ApiAccess";
+import { Broadcast } from "./components/Broadcast";
 const pages = {
   inbox: {
+    label: "Inbox",
     title: "Your inbox",
     subtitle: "One quiet place for your conversations.",
     icon: "▤",
   },
+  broadcast: {
+    label: "Broadcast",
+    title: "Broadcast",
+    subtitle: "Reach a whole list, one personal message at a time.",
+    icon: "⇉",
+  },
   connection: {
+    label: "WhatsApp",
     title: "WhatsApp connection",
     subtitle: "Link once. Pick up where you left off.",
     icon: "◉",
   },
   settings: {
+    label: "AI Copilot",
     title: "AI Copilot",
     subtitle: "A little assistance. You stay in control.",
     icon: "✧",
   },
   api: {
+    label: "API access",
     title: "API access",
     subtitle: "Connect your tools to your conversations.",
     icon: "⌘",
@@ -49,6 +60,7 @@ export default function App() {
     [refresh],
   );
   const connected = snapshot?.connection.status === "connected";
+  const sending = snapshot?.broadcasts.find((b) => b.status === "running");
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -67,15 +79,14 @@ export default function App() {
               onClick={() => setPage(key as keyof typeof pages)}
             >
               <span>{item.icon}</span>
-              {key === "inbox"
-                ? "Inbox"
-                : key === "connection"
-                  ? "WhatsApp"
-                  : key === "settings"
-                    ? "AI Copilot"
-                    : "API access"}
+              {item.label}
               {key === "inbox" && snapshot?.chats.length ? (
                 <small>{snapshot.chats.length}</small>
+              ) : null}
+              {key === "broadcast" && sending ? (
+                <small>
+                  {sending.total - sending.pending}/{sending.total}
+                </small>
               ) : null}
             </button>
           ))}
@@ -169,6 +180,13 @@ export default function App() {
             <Settings busy={busy} act={act} />
           ) : page === "api" ? (
             <ApiAccess busy={busy} act={act} tunnel={snapshot?.tunnel} />
+          ) : page === "broadcast" ? (
+            <Broadcast
+              broadcasts={snapshot?.broadcasts || []}
+              connected={connected && !error}
+              busy={busy}
+              act={act}
+            />
           ) : (
             <>
               <div className="section-heading">

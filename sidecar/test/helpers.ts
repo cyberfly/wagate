@@ -10,6 +10,8 @@ import { DraftRepository } from "../src/ai/draft-repository";
 import { CopilotService } from "../src/ai/copilot-service";
 import { createApi } from "../src/api/server";
 import { TunnelService } from "../src/tunnel/tunnel-service";
+import { BroadcastRepository } from "../src/broadcast/broadcast-repository";
+import { BroadcastService } from "../src/broadcast/broadcast-service";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
 import type { Message, ConnectionState } from "../src/messaging/types";
@@ -78,6 +80,14 @@ export function setup(ai?: AIProvider) {
     settings,
     events,
   );
+  // No pacing in tests: the next send is scheduled on the next timer tick.
+  const broadcasts = new BroadcastService(
+    new BroadcastRepository(db),
+    sender,
+    provider,
+    events,
+    () => 0,
+  );
   const services = {
     provider,
     keys,
@@ -89,6 +99,7 @@ export function setup(ai?: AIProvider) {
     vault: async () => vault,
     drafts,
     copilot,
+    broadcasts,
     port: 8787,
     databaseHealthy: () => true,
     log: () => {},
@@ -137,6 +148,7 @@ export function setup(ai?: AIProvider) {
     vault,
     sender,
     copilot,
+    broadcasts,
     requests,
     app,
     publicApp,
@@ -144,6 +156,7 @@ export function setup(ai?: AIProvider) {
     call,
     close: () => {
       copilot.close();
+      broadcasts.close();
       tunnel.close();
       db.close();
     },

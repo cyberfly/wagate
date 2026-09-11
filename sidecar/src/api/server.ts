@@ -16,6 +16,7 @@ import type { Vault } from "../security/vault";
 import type { DraftRepository } from "../ai/draft-repository";
 import type { CopilotService } from "../ai/copilot-service";
 import type { TunnelService } from "../tunnel/tunnel-service";
+import type { BroadcastService } from "../broadcast/broadcast-service";
 interface Services {
   provider: MessagingProvider;
   keys: ApiKeys;
@@ -27,6 +28,7 @@ interface Services {
   vault: () => Promise<Vault>;
   drafts: DraftRepository;
   copilot: CopilotService;
+  broadcasts: BroadcastService;
   desktopToken: string;
   port: number;
   tunnel?: TunnelService;
@@ -75,12 +77,18 @@ export function createApi(s: Services) {
         if (alerts.length > 5) alerts.shift();
       }
     });
-  app.use(
-    "*",
-    bodyLimit({
-      maxSize: 64 * 1024,
-      onError: (c) => c.json({ error: "Request too large" }, 413),
-    }),
+  const limit = (maxSize: number, error: string) =>
+    bodyLimit({ maxSize, onError: (c) => c.json({ error }, 413) });
+  const standardLimit = limit(64 * 1024, "Request too large");
+  // A CSV broadcast carries every rendered message in one request.
+  const broadcastLimit = limit(
+    4 * 1024 * 1024,
+    "Broadcast is too large. Split the CSV into smaller files.",
+  );
+  app.use("*", (c, next) =>
+    (!s.publicMode && c.req.path === "/internal/broadcasts"
+      ? broadcastLimit
+      : standardLimit)(c, next),
   );
   app.use("*", async (c, next) => {
     c.header("Cache-Control", "no-store");
@@ -229,6 +237,7 @@ export function createApi(s: Services) {
         drafts: chatId ? s.drafts.list(chatId) : [],
         processing: s.copilot.status(),
         tunnel: s.tunnel?.status() ?? null,
+        broadcasts: s.broadcasts.list(),
         alerts,
       });
     });
@@ -304,6 +313,38 @@ export function createApi(s: Services) {
         return c.json({ error: "Draft cannot be dismissed" }, 409);
       return c.json({ success: true });
     });
+    app.post("/internal/broadcasts", async (c) => {
+      const data = await body(c);
+      if (!Array.isArray(data.recipients))
+        throw new Error("Invalid recipients");
+      return c.json(
+        s.broadcasts.create({
+          name: string(data.name, "broadcast name", 120),
+          minDelay: Number(data.minDelay),
+          maxDelay: Number(data.maxDelay),
+          recipients: data.recipients.map((r: unknown) => {
+            if (!r || typeof r !== "object") throw new Error("Invalid recipients");
+            const { to, label, text } = r as Record<string, unknown>;
+            return {
+              to: string(to, "recipient", 100),
+              label: typeof label === "string" ? label : "",
+              text: string(text, "text"),
+            };
+          }),
+        }),
+      );
+    });
+    app.get("/internal/broadcasts/:id", (c) =>
+      c.json(s.broadcasts.get(c.req.param("id"))),
+    );
+    for (const action of ["pause", "resume", "cancel"] as const)
+      app.post(`/internal/broadcasts/:id/${action}`, (c) =>
+        c.json(s.broadcasts[action](c.req.param("id"))),
+      );
+    app.delete("/internal/broadcasts/:id", (c) => {
+      s.broadcasts.remove(c.req.param("id"));
+      return c.json({ success: true });
+    });
     app.get("/internal/tunnel", (c) => c.json(tunnel().status()));
     app.post("/internal/tunnel/install", (c) => c.json(tunnel().install()));
     app.post("/internal/tunnel/start", (c) => {
@@ -342,7 +383,7 @@ export function createApi(s: Services) {
   app.onError((error, c) => {
     s.log("error", "api.request.failed");
     const safe =
-      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare)/.test(
+      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare|Broadcast )/.test(
         error.message,
       );
     return c.json(

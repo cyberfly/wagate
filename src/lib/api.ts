@@ -19,12 +19,15 @@ export type {
   Message,
   Draft,
   ConnectionState,
+  Broadcast,
+  BroadcastRecipient,
 } from "../../sidecar/src/messaging/types";
 import type {
   Chat,
   Message,
   Draft,
   ConnectionState,
+  Broadcast,
 } from "../../sidecar/src/messaging/types";
 export interface TunnelState {
   status: "off" | "installing" | "starting" | "online" | "error";
@@ -42,6 +45,7 @@ export interface Snapshot {
   drafts: Draft[];
   processing: string[];
   tunnel: TunnelState | null;
+  broadcasts: Broadcast[];
   alerts: { id: number; error: string }[];
 }
 export const tunnelLabel: Record<string, string> = {
