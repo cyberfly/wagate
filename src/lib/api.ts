@@ -67,3 +67,21 @@ export const statusLabel: Record<string, string> = {
 export function displayName(id: string) {
   return id.split("@")[0];
 }
+/** A chat's name, or its number when WhatsApp and your contacts know none. */
+export function chatTitle(chat: Pick<Chat, "id" | "name">) {
+  return chat.name && chat.name !== chat.id ? chat.name : displayName(chat.id);
+}
+/** `+60123456789` for phone-number chats; other ids are not dialable. */
+export function phoneLabel(id: string) {
+  return id.endsWith("@s.whatsapp.net") ? "+" + displayName(id) : displayName(id);
+}
+export function initials(title: string) {
+  const words = title.match(/\p{L}[\p{L}\p{M}'’-]*/gu);
+  return words
+    ? words
+        .slice(0, 2)
+        .map((w) => w[0])
+        .join("")
+        .toUpperCase()
+    : title.slice(0, 2);
+}

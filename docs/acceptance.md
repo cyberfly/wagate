@@ -20,6 +20,9 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] Disconnect WhatsApp during a broadcast; it pauses with a visible reason and resumes after reconnecting.
 - [ ] The broadcast's send log shows each recipient's result and a timeline including the pause; **Save CSV** writes a file to Downloads that opens correctly in a spreadsheet.
 
+- [ ] After upgrading and connecting, chats with people saved in your phone show their saved names within a minute; `logs/app.log` records `contacts.resynced`.
+- [ ] A message from someone not in your contacts shows their WhatsApp profile name.
+
 Recovery checks:
 
 - [ ] QR expiry refreshes or gives a visible retry state.

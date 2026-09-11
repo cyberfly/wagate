@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
 import type { Chat } from "../messaging/types";
-const columns = `id,provider,name,type,last_message_at AS lastMessageAt,ai_mode AS aiMode`;
+// A chat's own name is its id until WhatsApp supplies one (a group subject, or
+// a name from history sync), so contact names fill in for direct chats.
+const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.imported_name,k.push_name,c.id) AS name,
+ c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode`;
+const from = "chats c LEFT JOIN contacts k ON k.id=c.id";
 export class ChatRepository {
   constructor(private db: Database) {}
   upsert(chat: Omit<Chat, "aiMode">) {
@@ -23,13 +27,13 @@ export class ChatRepository {
   }
   get(id: string) {
     return this.db
-      .query(`SELECT ${columns} FROM chats WHERE id=?`)
+      .query(`SELECT ${columns} FROM ${from} WHERE c.id=?`)
       .get(id) as Chat | null;
   }
   list() {
     return this.db
       .query(
-        `SELECT ${columns} FROM chats ORDER BY last_message_at DESC,id LIMIT 1000`,
+        `SELECT ${columns} FROM ${from} ORDER BY c.last_message_at DESC,c.id LIMIT 1000`,
       )
       .all() as Chat[];
   }

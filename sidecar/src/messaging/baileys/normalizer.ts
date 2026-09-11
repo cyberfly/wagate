@@ -1,9 +1,30 @@
 import {
   normalizeMessageContent,
   jidNormalizedUser,
+  type Contact,
   type WAMessage,
 } from "@whiskeysockets/baileys";
-import type { Message } from "../types";
+import type { ContactNames, Message } from "../types";
+/**
+ * Names from contact sync and message push names. A person can be known by a
+ * phone-number id and a LID; the names are stored under both so either chat
+ * id finds them.
+ */
+export function normalizeContacts(contacts: Partial<Contact>[]): ContactNames[] {
+  const result: ContactNames[] = [];
+  for (const c of contacts) {
+    const name = c.name?.trim() || undefined,
+      pushName = (c.notify || c.verifiedName)?.trim() || undefined;
+    if (!name && !pushName) continue;
+    const ids = new Set(
+      [c.id, c.lid, c.phoneNumber]
+        .filter((id): id is string => !!id && /@(s\.whatsapp\.net|lid)$/.test(id))
+        .map((id) => jidNormalizedUser(id)),
+    );
+    for (const id of ids) result.push({ id, name, pushName });
+  }
+  return result;
+}
 export function normalizeMessage(
   raw: WAMessage,
   selfId?: string,

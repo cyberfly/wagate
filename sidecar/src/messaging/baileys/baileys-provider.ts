@@ -10,7 +10,7 @@ import type { MessagingProvider, ProviderEvents } from "../messaging-provider";
 import type { ConnectionState } from "../types";
 import { Vault } from "../../security/vault";
 import { createAuth } from "./auth";
-import { normalizeMessage } from "./normalizer";
+import { normalizeContacts, normalizeMessage } from "./normalizer";
 export class BaileysProvider implements MessagingProvider {
   private socket?: WASocket;
   private state: ConnectionState = { status: "disconnected" };
@@ -158,8 +158,9 @@ export class BaileysProvider implements MessagingProvider {
           }
         }
       });
-      socket.ev.on("messaging-history.set", ({ chats, messages }) => {
+      socket.ev.on("messaging-history.set", ({ chats, contacts, messages }) => {
         if (!active()) return;
+        this.receiveContacts(contacts);
         for (const chat of chats) this.receiveChat(chat);
         for (const raw of messages) {
           try {
@@ -175,6 +176,14 @@ export class BaileysProvider implements MessagingProvider {
       });
       socket.ev.on("chats.update", (chats) => {
         if (active()) for (const chat of chats) this.receiveChat(chat);
+      });
+      // Saved names arrive from contact sync; Baileys also turns each incoming
+      // message's push name into a contacts.update.
+      socket.ev.on("contacts.upsert", (contacts) => {
+        if (active()) this.receiveContacts(contacts);
+      });
+      socket.ev.on("contacts.update", (contacts) => {
+        if (active()) this.receiveContacts(contacts);
       });
     } catch (error) {
       if (generation === this.generation) {
@@ -208,6 +217,30 @@ export class BaileysProvider implements MessagingProvider {
       });
     } catch {
       this.events.error("Could not store chat metadata");
+    }
+  }
+  /**
+   * Downloads saved contact names from scratch. Contact sync only sends
+   * changes after the first pairing, so names synced before Wagate stored
+   * them never arrive otherwise. Baileys emits them as contacts.upsert.
+   */
+  async resyncContacts() {
+    const socket = this.socket;
+    if (!socket || this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    // No stored version makes WhatsApp return the whole collection, as it does
+    // on first pairing. Saved contacts live in critical_unblock_low.
+    await socket.authState.keys.set({
+      "app-state-sync-version": { critical_unblock_low: null },
+    });
+    await socket.resyncAppState(["critical_unblock_low"], true);
+  }
+  private receiveContacts(contacts: Parameters<typeof normalizeContacts>[0]) {
+    try {
+      const names = normalizeContacts(contacts ?? []);
+      if (names.length) this.events.contacts(names);
+    } catch {
+      this.events.error("Could not store contact names");
     }
   }
   async disconnect() {

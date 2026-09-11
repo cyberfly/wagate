@@ -19,6 +19,14 @@ export interface Chat {
   lastMessageAt: number | null;
   aiMode: "off" | "copilot";
 }
+/** Names WhatsApp knows for one person. Missing fields leave stored ones alone. */
+export interface ContactNames {
+  id: string;
+  /** Saved in your phone's contacts. */
+  name?: string;
+  /** Set by the contact on their own WhatsApp profile. */
+  pushName?: string;
+}
 export interface Message {
   id: string;
   provider: "whatsapp";

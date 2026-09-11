@@ -12,6 +12,7 @@ import { createApi } from "../src/api/server";
 import { TunnelService } from "../src/tunnel/tunnel-service";
 import { BroadcastRepository } from "../src/broadcast/broadcast-repository";
 import { BroadcastService } from "../src/broadcast/broadcast-service";
+import { ContactRepository } from "../src/contacts/contact-repository";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
 import type { Message, ConnectionState } from "../src/messaging/types";
@@ -80,9 +81,11 @@ export function setup(ai?: AIProvider) {
     settings,
     events,
   );
+  const contacts = new ContactRepository(db);
   // No pacing in tests: the next send is scheduled on the next timer tick.
   const broadcasts = new BroadcastService(
     new BroadcastRepository(db),
+    contacts,
     sender,
     provider,
     events,
@@ -149,6 +152,7 @@ export function setup(ai?: AIProvider) {
     sender,
     copilot,
     broadcasts,
+    contacts,
     requests,
     app,
     publicApp,

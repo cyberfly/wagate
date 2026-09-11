@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import {
   request,
   displayName,
+  chatTitle,
+  phoneLabel,
+  initials,
   type Chat,
   type Message,
   type Draft,
@@ -104,21 +107,15 @@ export function Inbox(p: Props) {
                 }
                 onClick={() => p.select(c.id)}
               >
-                <span className="avatar">
-                  {(c.name === c.id ? displayName(c.id) : c.name)
-                    .slice(0, 2)
-                    .toUpperCase()}
-                </span>
+                <span className="avatar">{initials(chatTitle(c))}</span>
                 <span className="chat-info">
-                  <strong>
-                    {c.name === c.id ? displayName(c.id) : c.name}
-                  </strong>
+                  <strong>{chatTitle(c)}</strong>
                   <small>
                     {c.aiMode === "copilot"
                       ? "✧ Copilot enabled"
                       : c.type === "group"
                         ? "Group conversation"
-                        : displayName(c.id)}
+                        : phoneLabel(c.id)}
                   </small>
                 </span>
                 {c.lastMessageAt ? (
@@ -146,14 +143,14 @@ export function Inbox(p: Props) {
           <>
             <header className="conversation-header">
               <div>
-                <h3>
-                  {chat?.name && chat.name !== chat.id
-                    ? chat.name
-                    : displayName(p.selected)}
-                </h3>
+                <h3>{chatTitle(chat ?? { id: p.selected, name: "" })}</h3>
                 <small>
-                  {chat?.type === "group" ? "Group" : "WhatsApp"} ·{" "}
-                  {p.connected ? "Ready to send" : "Disconnected"}
+                  {chat?.type === "group"
+                    ? "Group"
+                    : chat && chat.name !== chat.id
+                      ? phoneLabel(chat.id)
+                      : "WhatsApp"}{" "}
+                  · {p.connected ? "Ready to send" : "Disconnected"}
                 </small>
               </div>
               <label className="mode-picker">

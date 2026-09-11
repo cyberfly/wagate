@@ -18,6 +18,7 @@ import { CopilotService } from "./ai/copilot-service";
 import { TunnelService } from "./tunnel/tunnel-service";
 import { BroadcastRepository } from "./broadcast/broadcast-repository";
 import { BroadcastService } from "./broadcast/broadcast-service";
+import { ContactRepository } from "./contacts/contact-repository";
 process.umask(0o077);
 const port = Number(process.env.WAGATE_PORT || 8787);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
@@ -36,18 +37,21 @@ const events = new EventBus(),
   messages = new MessageRepository(db, chats),
   settings = new Settings(db),
   keys = new ApiKeys(db),
-  drafts = new DraftRepository(db);
+  drafts = new DraftRepository(db),
+  contacts = new ContactRepository(db);
 const vault = createVaultLoader(() => Vault.open(db, dataDir));
 const provider = new BaileysProvider(vault, {
   connection: (state) => {
     events.publish("messaging.connection", state);
     log("info", "whatsapp.state", { state: state.status });
+    if (state.status === "connected") resyncContactsOnce();
   },
   message: (message, live) => sender.receive(message, live),
   chat: (chat) => {
     chats.upsert(chat);
     events.publish("chat.updated", { id: chat.id });
   },
+  contacts: (names) => contacts.save(names),
   error: () => {
     log("error", "whatsapp.operation.failed");
     events.publish("messaging.error", {
@@ -55,6 +59,23 @@ const provider = new BaileysProvider(vault, {
     });
   },
 });
+// Saved contact names synced before Wagate stored them need one fresh copy of
+// WhatsApp's contacts. Fetch it once, after the connection settles; a failure
+// leaves the flag unset so the next connection tries again.
+let contactResync: ReturnType<typeof setTimeout> | undefined;
+function resyncContactsOnce() {
+  if (contactResync || settings.get("contacts.resynced") === "true") return;
+  contactResync = setTimeout(() => {
+    provider
+      .resyncContacts()
+      .then(() => {
+        settings.set("contacts.resynced", "true");
+        log("info", "contacts.resynced");
+      })
+      .catch(() => log("error", "contacts.resync.failed"))
+      .finally(() => (contactResync = undefined));
+  }, 10000);
+}
 const sender = new MessageService(provider, messages, events);
 const ai = new OpenRouterProvider(async () =>
   (await vault()).get("openrouter"),
@@ -70,6 +91,7 @@ const copilot = new CopilotService(
 );
 const broadcasts = new BroadcastService(
   new BroadcastRepository(db),
+  contacts,
   sender,
   provider,
   events,
@@ -132,6 +154,7 @@ let stopping = false;
 const shutdown = async () => {
   if (stopping) return;
   stopping = true;
+  clearTimeout(contactResync);
   copilot.close();
   broadcasts.close();
   tunnel.close();

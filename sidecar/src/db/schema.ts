@@ -56,5 +56,24 @@ CREATE TABLE IF NOT EXISTS broadcast_events (
 CREATE INDEX IF NOT EXISTS broadcast_events_broadcast ON broadcast_events(broadcast_id,id);
 PRAGMA user_version = 3;
 `;
+// contacts.name is the name saved in your phone; push_name is the name the
+// contact set for themselves; imported_name came from your own broadcast CSV.
+// Names already sent to in a broadcast are backfilled, latest broadcast first.
+export const contactNamesSchema = `
+ALTER TABLE contacts ADD COLUMN push_name TEXT;
+ALTER TABLE contacts ADD COLUMN imported_name TEXT;
+ALTER TABLE contacts ADD COLUMN updated_at INTEGER;
+INSERT INTO contacts(id,imported_name,updated_at)
+ SELECT r.chat_id,r.label,MAX(b.created_at) FROM broadcast_recipients r JOIN broadcasts b ON b.id=r.broadcast_id
+ WHERE r.label<>substr(r.chat_id,1,instr(r.chat_id,'@')-1)
+ GROUP BY r.chat_id
+ ON CONFLICT(id) DO UPDATE SET imported_name=excluded.imported_name,updated_at=excluded.updated_at;
+PRAGMA user_version = 4;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
-export const migrations = [schema, broadcastSchema, broadcastLogSchema];
+export const migrations = [
+  schema,
+  broadcastSchema,
+  broadcastLogSchema,
+  contactNamesSchema,
+];

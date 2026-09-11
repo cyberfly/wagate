@@ -93,7 +93,7 @@ curl http://127.0.0.1:8787/v1/messages/send \
 
 Provide either `to` (international number, optional `+`) or `chatId` (WhatsApp JID), plus 1–10,000 characters of text. The response contains `success`, `messageId`, and the normalized message. Success means provider acceptance, not recipient delivery/read confirmation. Do not automatically retry timed-out sends; check delivery first to avoid duplicates.
 
-History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The list shows up to 1,000 recent chats. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled unless you start one in **API access**.
+History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The list shows up to 1,000 recent chats. A chat's `name`, in the UI and `GET /v1/chats`, is the best name known, in this order: the name saved in your phone's contacts, WhatsApp's own chat name (such as a group subject), the name from a broadcast CSV, then the name the person set on their WhatsApp profile. Without any of these it is the chat ID. Saved names arrive through contact sync; after upgrading, Wagate fetches your contacts once, about 10 seconds after connecting. Profile names arrive with each incoming message. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled unless you start one in **API access**.
 
 ## Public access (Cloudflare Tunnel)
 
@@ -119,7 +119,7 @@ Quick-tunnel caveats, all from Cloudflare: the address changes on every start, `
 
 Messages go out with a random gap, 10–20 seconds by default and 5–600 seconds allowed. Sending many near-identical messages quickly is a common reason WhatsApp restricts a number, so keep the gap generous and send only to people who expect to hear from you. Only one broadcast sends at a time, and Wagate must stay open.
 
-Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, and **Cancel**. Sent messages also appear in the inbox. Safety rules follow the rest of Wagate:
+Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, and **Cancel**. Sent messages also appear in the inbox, named from the CSV unless the person is saved in your phone's contacts. Safety rules follow the rest of Wagate:
 
 - If WhatsApp disconnects, the broadcast pauses before the next send; reconnect and **Resume**.
 - If a send fails, the delivery state is unknown. That recipient is marked **uncertain** and never retried, and the broadcast pauses so you can check your phone before resuming with the rest.
@@ -155,10 +155,10 @@ Only selected recent chat context goes to OpenRouter: default 20 messages, confi
 
 Desktop data uses Tauri’s app-data directory, normally `~/Library/Application Support/com.wagate.desktop/` on macOS:
 
-- `wagate.sqlite`: chats, messages, settings, hashed API keys, drafts, broadcasts, encrypted secrets.
+- `wagate.sqlite`: chats, messages, contact names, settings, hashed API keys, drafts, broadcasts, encrypted secrets.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables and version 3 the send log to existing databases. Accounts, contacts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, and version 4 contact names (backfilled from broadcasts already sent) to existing databases. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
 
 WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere). There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 
