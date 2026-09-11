@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   request,
   statusLabel,
@@ -14,6 +15,8 @@ export function Connection({
   act: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const status = state?.status || "disconnected";
+  // window.confirm is a no-op in the Tauri webview, so confirm in-app.
+  const [confirmingReset, setConfirmingReset] = useState(false);
   return (
     <section className="connection-layout">
       <div>
@@ -76,48 +79,67 @@ export function Connection({
             {state.error}
           </p>
         ) : null}
-        <div className="button-row">
-          {status === "disconnected" || status === "auth_error" ? (
-            <button
-              disabled={busy || status === "auth_error"}
-              onClick={() =>
-                void act(() => request("/internal/connection/connect", "POST"))
-              }
-            >
-              Connect WhatsApp
-            </button>
-          ) : (
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={() =>
-                void act(() =>
-                  request("/internal/connection/disconnect", "POST"),
-                )
-              }
-            >
-              Disconnect
-            </button>
-          )}
-          {status === "auth_error" || status === "connected" ? (
-            <button
-              className="text-button danger"
-              disabled={busy}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    "Unlink this session? You will need to scan a QR code again.",
-                  )
-                )
+        {confirmingReset ? (
+          <div className="confirm-box" role="alertdialog">
+            <strong>Unlink this session?</strong>
+            <p>You will need to scan a QR code again to reconnect.</p>
+            <div className="button-row">
+              <button
+                disabled={busy}
+                onClick={() => {
+                  setConfirmingReset(false);
                   void act(() =>
                     request("/internal/connection/logout", "POST"),
                   );
-              }}
-            >
-              Reset session
-            </button>
-          ) : null}
-        </div>
+                }}
+              >
+                Reset session
+              </button>
+              <button
+                className="secondary"
+                onClick={() => setConfirmingReset(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="button-row">
+            {status === "disconnected" || status === "auth_error" ? (
+              <button
+                disabled={busy || status === "auth_error"}
+                onClick={() =>
+                  void act(() =>
+                    request("/internal/connection/connect", "POST"),
+                  )
+                }
+              >
+                Connect WhatsApp
+              </button>
+            ) : (
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void act(() =>
+                    request("/internal/connection/disconnect", "POST"),
+                  )
+                }
+              >
+                Disconnect
+              </button>
+            )}
+            {status === "auth_error" || status === "connected" ? (
+              <button
+                className="text-button danger"
+                disabled={busy}
+                onClick={() => setConfirmingReset(true)}
+              >
+                Reset session
+              </button>
+            ) : null}
+          </div>
+        )}
         <small>Disconnect pauses the connection and keeps your session.</small>
       </div>
     </section>
