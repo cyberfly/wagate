@@ -18,6 +18,18 @@ export interface Chat {
   type: "direct" | "group";
   lastMessageAt: number | null;
   aiMode: "off" | "copilot";
+  pinned: boolean;
+  archived: boolean;
+}
+/** What WhatsApp reports about a chat. Missing fields leave stored ones alone. */
+export interface ChatUpdate {
+  id: string;
+  type: Chat["type"];
+  name?: string;
+  lastMessageAt?: number;
+  /** When the chat was pinned, or null once unpinned. */
+  pinnedAt?: number | null;
+  archived?: boolean;
 }
 /** Names WhatsApp knows for one person. Missing fields leave stored ones alone. */
 export interface ContactNames {

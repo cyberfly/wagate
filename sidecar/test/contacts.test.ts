@@ -16,15 +16,13 @@ const chat = (id: string, name = id) => ({
   type: id.endsWith("@g.us") ? ("group" as const) : ("direct" as const),
   lastMessageAt: 1,
 });
-test("a chat shows the best name known: saved, WhatsApp's, imported, profile, then number", () => {
+test("a chat shows the best name WhatsApp knows: saved, WhatsApp's, profile, then number", () => {
   const s = setup();
   const name = () => s.chats.get(direct)!.name;
   s.chats.upsert(chat(direct));
   expect(name()).toBe(direct);
   s.contacts.save([{ id: direct, pushName: "🌸 Ai" }]);
   expect(name()).toBe("🌸 Ai");
-  s.contacts.import([{ id: direct, name: "Aina Salleh" }]);
-  expect(name()).toBe("Aina Salleh");
   s.chats.upsert(chat(direct, "Aina (WhatsApp)"));
   expect(name()).toBe("Aina (WhatsApp)");
   s.contacts.save([{ id: direct, name: "Aina — Studio" }]);
@@ -64,49 +62,40 @@ test("contact sync names are stored under both the phone-number id and the LID",
     },
   ]);
 });
-test("a broadcast names its recipients from the CSV, only where the CSV had a name", () => {
+test("a broadcast's CSV names never label chats", async () => {
   const s = setup();
-  s.broadcasts.create({
+  const b = s.broadcasts.create({
     name: "Launch",
     minDelay: 5,
     maxDelay: 10,
-    recipients: [
-      { to: "60120000001", label: "Aina Salleh", text: "Hi" },
-      { to: "60120000002", label: "", text: "Hi" },
-    ],
+    recipients: [{ to: "60120000001", label: "Aina Salleh", text: "Hi" }],
   });
+  for (let i = 0; i < 100 && !s.provider.sent.length; i++) await Bun.sleep(5);
   s.broadcasts.close();
-  s.chats.upsert(chat(direct));
-  s.chats.upsert(chat("60120000002@s.whatsapp.net"));
-  expect(s.chats.get(direct)!.name).toBe("Aina Salleh");
-  expect(s.chats.get("60120000002@s.whatsapp.net")!.name).toBe(
-    "60120000002@s.whatsapp.net",
-  );
+  expect(s.broadcasts.get(b.id).recipients[0].label).toBe("Aina Salleh");
+  expect(s.chats.get(direct)!.name).toBe(direct);
   s.close();
 });
-test("upgrading names chats from broadcasts already sent, using the latest list", () => {
+test("upgrading removes CSV names but keeps names from WhatsApp", () => {
   const dir = mkdtempSync(join(tmpdir(), "wagate-contacts-"));
   const path = join(dir, "wagate.sqlite");
   const old = new Database(path, { create: true });
-  for (const step of migrations.slice(0, 3)) old.exec(step);
+  for (const step of migrations.slice(0, 5)) old.exec(step);
   old.exec(`
-    INSERT INTO broadcasts VALUES('old','Old','completed',5,10,NULL,1,1),('new','New','completed',5,10,NULL,2,2);
-    INSERT INTO broadcast_recipients(broadcast_id,position,chat_id,label,text) VALUES
-      ('old',1,'${direct}','Aina','Hi'),
-      ('new',1,'${direct}','Aina Salleh','Hi'),
-      ('new',2,'60120000002@s.whatsapp.net','60120000002','Hi');
-    INSERT INTO chats(id,provider,provider_chat_id,name,type,created_at,updated_at) VALUES
-      ('${direct}','whatsapp','${direct}','${direct}','direct',1,1),
-      ('60120000002@s.whatsapp.net','whatsapp','x','60120000002@s.whatsapp.net','direct',1,1);
+    INSERT INTO contacts(id,name,imported_name) VALUES
+      ('${direct}',NULL,'Aina Salleh'),
+      ('60120000002@s.whatsapp.net','Ben (saved)','Ben from CSV');
+    INSERT INTO chats(id,provider,provider_chat_id,name,type,last_message_at,created_at,updated_at) VALUES
+      ('${direct}','whatsapp','${direct}','${direct}','direct',1,1,1),
+      ('60120000002@s.whatsapp.net','whatsapp','x','60120000002@s.whatsapp.net','direct',2,1,1);
   `);
   old.close();
   const db = openDatabase(path);
   const chats = new ChatRepository(db);
-  expect(chats.get(direct)!.name).toBe("Aina Salleh");
-  // A row without a name in the CSV was labelled with its number; not a name.
-  expect(chats.get("60120000002@s.whatsapp.net")!.name).toBe(
-    "60120000002@s.whatsapp.net",
-  );
+  expect(chats.get(direct)!.name).toBe(direct);
+  expect(chats.get("60120000002@s.whatsapp.net")!.name).toBe("Ben (saved)");
+  expect(db.query("SELECT COUNT(*) AS n FROM contacts").get()).toEqual({ n: 1 });
+  expect(chats.get(direct)).toMatchObject({ pinned: false, archived: false });
   db.close();
   rmSync(dir, { recursive: true });
 });

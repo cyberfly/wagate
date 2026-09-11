@@ -20,12 +20,20 @@ interface Props {
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
 }
+/** Time today, otherwise the date, like WhatsApp's chat list. */
+function lastActive(ms: number) {
+  const d = new Date(ms);
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 export function Inbox(p: Props) {
   const [search, setSearch] = useState(""),
     [text, setText] = useState(""),
     [recipient, setRecipient] = useState(""),
     [newChat, setNewChat] = useState(false),
-    [draftText, setDraftText] = useState("");
+    [draftText, setDraftText] = useState(""),
+    [archivedOpen, setShowArchived] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const chat = p.chats.find((c) => c.id === p.selected);
   const draft = p.drafts.find((d) => d.status === "pending");
@@ -39,6 +47,37 @@ export function Inbox(p: Props) {
     const pane = bottom.current?.parentElement;
     pane?.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
   }, [p.messages.at(-1)?.id, p.selected]);
+  // The sidecar sends chats in WhatsApp's order: pinned, then by activity,
+  // with archived chats last.
+  const found = p.chats.filter((c) =>
+    (c.name + c.id).toLowerCase().includes(search.toLowerCase()),
+  );
+  const active = found.filter((c) => !c.archived),
+    archived = found.filter((c) => c.archived);
+  const showArchived = archivedOpen || !!search;
+  const item = (c: Chat) => (
+    <button
+      key={c.id}
+      className={"chat-item " + (c.id === p.selected ? "selected" : "")}
+      onClick={() => p.select(c.id)}
+    >
+      <span className="avatar">{initials(chatTitle(c))}</span>
+      <span className="chat-info">
+        <strong>{chatTitle(c)}</strong>
+        <small>
+          {c.aiMode === "copilot"
+            ? "✧ Copilot enabled"
+            : c.type === "group"
+              ? "Group conversation"
+              : phoneLabel(c.id)}
+        </small>
+      </span>
+      <span className="chat-meta">
+        {c.lastMessageAt ? <time>{lastActive(c.lastMessageAt)}</time> : null}
+        {c.pinned && !c.archived ? <small>Pinned</small> : null}
+      </span>
+    </button>
+  );
   const send = () =>
     p.act(async () => {
       await request("/v1/messages/send", "POST", { chatId: p.selected, text });
@@ -95,39 +134,21 @@ export function Inbox(p: Props) {
           />
         </div>
         <div className="chat-items">
-          {p.chats
-            .filter((c) =>
-              (c.name + c.id).toLowerCase().includes(search.toLowerCase()),
-            )
-            .map((c) => (
+          {active.map(item)}
+          {archived.length ? (
+            <>
               <button
-                key={c.id}
-                className={
-                  "chat-item " + (c.id === p.selected ? "selected" : "")
-                }
-                onClick={() => p.select(c.id)}
+                className="archived-toggle"
+                aria-expanded={showArchived}
+                onClick={() => setShowArchived(!showArchived)}
               >
-                <span className="avatar">{initials(chatTitle(c))}</span>
-                <span className="chat-info">
-                  <strong>{chatTitle(c)}</strong>
-                  <small>
-                    {c.aiMode === "copilot"
-                      ? "✧ Copilot enabled"
-                      : c.type === "group"
-                        ? "Group conversation"
-                        : phoneLabel(c.id)}
-                  </small>
-                </span>
-                {c.lastMessageAt ? (
-                  <time>
-                    {new Date(c.lastMessageAt).toLocaleDateString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                    })}
-                  </time>
-                ) : null}
+                <span>Archived</span>
+                <span className="count">{archived.length}</span>
+                <span className="chevron">{showArchived ? "▾" : "▸"}</span>
               </button>
-            ))}
+              {showArchived ? archived.map(item) : null}
+            </>
+          ) : null}
           {p.chats.length === 0 ? (
             <div className="list-empty">
               <p>No conversations yet</p>

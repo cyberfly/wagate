@@ -1,5 +1,5 @@
 import type {
-  Chat,
+  ChatUpdate,
   ConnectionState,
   ContactNames,
   Message,
@@ -9,7 +9,7 @@ export interface ProviderEvents {
   connection: (state: ConnectionState) => void;
   message: (message: Message, live: boolean) => void;
   receipt: (receipt: MessageReceipt) => void;
-  chat: (chat: Omit<Chat, "aiMode">) => void;
+  chat: (chat: ChatUpdate) => void;
   contacts: (contacts: ContactNames[]) => void;
   error: (message: string) => void;
 }

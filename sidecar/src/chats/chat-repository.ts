@@ -1,13 +1,20 @@
 import type { Database } from "bun:sqlite";
-import type { Chat } from "../messaging/types";
+import type { Chat, ChatUpdate } from "../messaging/types";
 // A chat's own name is its id until WhatsApp supplies one (a group subject, or
 // a name from history sync), so contact names fill in for direct chats.
-const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.imported_name,k.push_name,c.id) AS name,
- c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode`;
+const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name,c.id) AS name,
+ c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode,
+ c.pinned_at IS NOT NULL AS pinned,c.archived<>0 AS archived`;
 const from = "chats c LEFT JOIN contacts k ON k.id=c.id";
+type Row = Omit<Chat, "pinned" | "archived"> & {
+  pinned: number;
+  archived: number;
+};
+const toChat = (row: Row | null): Chat | null =>
+  row && { ...row, pinned: !!row.pinned, archived: !!row.archived };
 export class ChatRepository {
   constructor(private db: Database) {}
-  upsert(chat: Omit<Chat, "aiMode">) {
+  upsert(chat: Omit<Chat, "aiMode" | "pinned" | "archived">) {
     const now = Date.now();
     this.db
       .query(
@@ -25,17 +32,53 @@ export class ChatRepository {
       );
     return this.get(chat.id)!;
   }
-  get(id: string) {
-    return this.db
-      .query(`SELECT ${columns} FROM ${from} WHERE c.id=?`)
-      .get(id) as Chat | null;
+  /**
+   * Applies what WhatsApp reports about a chat. Account sync mentions every
+   * chat ever archived, muted, pinned or read, with no activity time; those
+   * update known chats but never add one, or the inbox fills with chats it
+   * cannot place in WhatsApp's order.
+   */
+  apply(update: ChatUpdate) {
+    return this.db.transaction(() => {
+      const known = !!this.db.query("SELECT 1 FROM chats WHERE id=?").get(update.id);
+      if (!known && !update.lastMessageAt) return false;
+      this.upsert({
+        id: update.id,
+        provider: "whatsapp",
+        name: update.name || update.id,
+        type: update.type,
+        lastMessageAt: update.lastMessageAt ?? null,
+      });
+      if (update.pinnedAt !== undefined)
+        this.db
+          .query("UPDATE chats SET pinned_at=? WHERE id=?")
+          .run(update.pinnedAt, update.id);
+      if (update.archived !== undefined)
+        this.db
+          .query("UPDATE chats SET archived=? WHERE id=?")
+          .run(update.archived ? 1 : 0, update.id);
+      return true;
+    })();
   }
+  get(id: string) {
+    return toChat(
+      this.db.query(`SELECT ${columns} FROM ${from} WHERE c.id=?`).get(id) as Row | null,
+    );
+  }
+  /**
+   * WhatsApp's order: pinned chats, most recently pinned first, then by last
+   * activity, with archived chats after the rest. Chats with no known
+   * activity are left out.
+   */
   list() {
-    return this.db
-      .query(
-        `SELECT ${columns} FROM ${from} ORDER BY c.last_message_at DESC,c.id LIMIT 1000`,
-      )
-      .all() as Chat[];
+    return (
+      this.db
+        .query(
+          `SELECT ${columns} FROM ${from} WHERE c.last_message_at IS NOT NULL
+           ORDER BY c.archived,c.pinned_at IS NULL,c.pinned_at DESC,c.last_message_at DESC,c.id LIMIT 1000`,
+        )
+        .all() as Row[]
+    ).map((row) => toChat(row)!);
   }
   setMode(id: string, mode: Chat["aiMode"]) {
     this.db.query("UPDATE chats SET ai_mode=? WHERE id=?").run(mode, id);

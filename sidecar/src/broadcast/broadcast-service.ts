@@ -6,7 +6,6 @@ import type { Broadcast, MessageReceipt } from "../messaging/types";
 import { resolveChatId, MessageService } from "../messages/message-service";
 import { EventBus } from "../events/event-bus";
 import { BroadcastRepository } from "./broadcast-repository";
-import { ContactRepository } from "../contacts/contact-repository";
 import { localTime, maxRecipients, sendLogCsv } from "./csv";
 export interface BroadcastInput {
   name: string;
@@ -55,7 +54,6 @@ export class BroadcastService {
   private closed = false;
   constructor(
     private repository: BroadcastRepository,
-    private contacts: ContactRepository,
     private sender: MessageService,
     private provider: MessagingProvider,
     private events: EventBus,
@@ -131,14 +129,10 @@ export class BroadcastService {
       if (!text || text.length > 10000)
         throw new Error(`${row} needs a message of 1–10,000 characters`);
       const label = String(r.label ?? "").trim().slice(0, 200);
-      return { chatId, text, label: label || chatId.split("@")[0], named: !!label };
+      return { chatId, text, label: label || chatId.split("@")[0] };
     });
     this.idle();
     const broadcast = this.repository.create(name, minDelay, maxDelay, recipients);
-    // The CSV's names label these chats in the inbox, below saved contacts.
-    this.contacts.import(
-      recipients.filter((r) => r.named).map((r) => ({ id: r.chatId, name: r.label })),
-    );
     this.updated(broadcast.id);
     this.schedule(0);
     return broadcast;

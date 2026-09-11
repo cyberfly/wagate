@@ -18,6 +18,8 @@ const chats: Chat[] = [
     type: "direct",
     lastMessageAt: now,
     aiMode: "copilot",
+    pinned: false,
+    archived: false,
   },
   {
     id: "60222222222@s.whatsapp.net",
@@ -26,6 +28,8 @@ const chats: Chat[] = [
     type: "direct",
     lastMessageAt: now - 3600000,
     aiMode: "off",
+    pinned: true,
+    archived: false,
   },
   {
     id: "60333333333@s.whatsapp.net",
@@ -34,15 +38,35 @@ const chats: Chat[] = [
     type: "direct",
     lastMessageAt: now - 7200000,
     aiMode: "off",
+    pinned: false,
+    archived: false,
+  },
+  {
+    id: "60444444444@s.whatsapp.net",
+    provider: "whatsapp",
+    name: "Old supplier",
+    type: "direct",
+    lastMessageAt: now - 86400000 * 30,
+    aiMode: "off",
+    pinned: false,
+    archived: true,
   },
 ];
+// Mirrors the sidecar's order: pinned first, then by activity, archived last.
+chats.sort(
+  (a, b) =>
+    Number(a.archived) - Number(b.archived) ||
+    Number(b.pinned) - Number(a.pinned) ||
+    (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0),
+);
+const ali = chats.find((c) => c.name === "Ali Rahman")!;
 const messages: Message[] = [
   {
     id: "sample-1",
     provider: "whatsapp",
     providerMessageId: "sample-1",
-    chatId: chats[0].id,
-    senderId: chats[0].id,
+    chatId: ali.id,
+    senderId: ali.id,
     direction: "incoming",
     type: "text",
     text: "Hey! Do you have time to go over the proposal tomorrow?",
@@ -52,7 +76,7 @@ const messages: Message[] = [
     id: "sample-2",
     provider: "whatsapp",
     providerMessageId: "sample-2",
-    chatId: chats[0].id,
+    chatId: ali.id,
     senderId: "me",
     direction: "outgoing",
     type: "text",
@@ -63,8 +87,8 @@ const messages: Message[] = [
     id: "sample-3",
     provider: "whatsapp",
     providerMessageId: "sample-3",
-    chatId: chats[0].id,
-    senderId: chats[0].id,
+    chatId: ali.id,
+    senderId: ali.id,
     direction: "incoming",
     type: "text",
     text: "Great. Would 2 pm work for you?",
@@ -74,7 +98,7 @@ const messages: Message[] = [
 const drafts: Draft[] = [
   {
     id: "sample-draft",
-    chatId: chats[0].id,
+    chatId: ali.id,
     sourceMessageId: "sample-3",
     text: "2 pm works for me. I’ll have the proposal ready for us to review. See you then!",
     status: "pending",

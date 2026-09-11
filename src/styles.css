@@ -407,12 +407,47 @@ main {
   font-weight: 400;
   font-size: 10px;
 }
-.chat-item time {
+.chat-meta {
   margin-left: auto;
   align-self: flex-start;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+.chat-meta time {
   font-size: 8px;
   color: #95a18f;
   white-space: nowrap;
+}
+.chat-meta small {
+  font-size: 8px;
+  color: #6f8f73;
+  background: #edf3e8;
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: #f8faf6;
+  color: #6f8471;
+  border-radius: 0;
+  border-top: 1px solid #eef2ea;
+  padding: 11px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+}
+.archived-toggle:hover {
+  background: #eff5eb;
+}
+.archived-toggle .count {
+  margin-left: 0;
+}
+.archived-toggle .chevron {
+  margin-left: auto;
 }
 .conversation {
   display: flex;

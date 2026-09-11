@@ -11,6 +11,7 @@ import type { ConnectionState } from "../types";
 import { Vault } from "../../security/vault";
 import { createAuth } from "./auth";
 import {
+  normalizeChat,
   normalizeContacts,
   normalizeMessage,
   normalizeReceipt,
@@ -216,41 +217,36 @@ export class BaileysProvider implements MessagingProvider {
       }
     }
   }
-  private receiveChat(chat: {
-    id?: string | null;
-    name?: string | null;
-    conversationTimestamp?: unknown;
-  }) {
-    if (!chat.id || !/@(s\.whatsapp\.net|lid|g\.us)$/.test(chat.id)) return;
+  private receiveChat(chat: Parameters<typeof normalizeChat>[0]) {
     try {
-      this.events.chat({
-        id: jidNormalizedUser(chat.id),
-        provider: "whatsapp",
-        name: chat.name || jidNormalizedUser(chat.id),
-        type: chat.id.endsWith("@g.us") ? "group" : "direct",
-        lastMessageAt: chat.conversationTimestamp
-          ? Number(chat.conversationTimestamp) * 1000
-          : null,
-      });
+      const update = normalizeChat(chat);
+      if (update) this.events.chat(update);
     } catch {
       this.events.error("Could not store chat metadata");
     }
   }
   /**
-   * Downloads saved contact names from scratch. Contact sync only sends
-   * changes after the first pairing, so names synced before Wagate stored
-   * them never arrive otherwise. Baileys emits them as contacts.upsert.
+   * Downloads account-state collections from scratch: saved contacts live in
+   * critical_unblock_low, pins and archives in regular_low. That sync only
+   * sends changes after the first pairing, so state synced before Wagate
+   * stored it never arrives otherwise.
    */
-  async resyncContacts() {
+  async resyncAccountState(
+    collections: ("critical_unblock_low" | "regular_low")[],
+  ) {
     const socket = this.socket;
     if (!socket || this.state.status !== "connected")
       throw new Error("WhatsApp is disconnected");
     // No stored version makes WhatsApp return the whole collection, as it does
-    // on first pairing. Saved contacts live in critical_unblock_low.
+    // on first pairing.
     await socket.authState.keys.set({
-      "app-state-sync-version": { critical_unblock_low: null },
+      "app-state-sync-version": Object.fromEntries(
+        collections.map((name) => [name, null]),
+      ),
     });
-    await socket.resyncAppState(["critical_unblock_low"], true);
+    // Replayed as live changes: during an initial sync Baileys holds a chat's
+    // pin or archive back until it sees that chat in the same sync.
+    await socket.resyncAppState(collections, false);
   }
   private receiveContacts(contacts: Parameters<typeof normalizeContacts>[0]) {
     try {

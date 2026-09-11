@@ -92,7 +92,6 @@ export function setup(ai?: AIProvider) {
   // No pacing in tests: the next send is scheduled on the next timer tick.
   const broadcasts = new BroadcastService(
     new BroadcastRepository(db),
-    contacts,
     sender,
     provider,
     events,

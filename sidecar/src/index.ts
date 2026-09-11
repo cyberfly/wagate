@@ -44,7 +44,7 @@ const provider = new BaileysProvider(vault, {
   connection: (state) => {
     events.publish("messaging.connection", state);
     log("info", "whatsapp.state", { state: state.status });
-    if (state.status === "connected") resyncContactsOnce();
+    if (state.status === "connected") resyncAccountStateOnce();
   },
   message: (message, live) => sender.receive(message, live),
   receipt: (receipt) => {
@@ -53,8 +53,7 @@ const provider = new BaileysProvider(vault, {
     broadcasts.receipt(receipt);
   },
   chat: (chat) => {
-    chats.upsert(chat);
-    events.publish("chat.updated", { id: chat.id });
+    if (chats.apply(chat)) events.publish("chat.updated", { id: chat.id });
   },
   contacts: (names) => contacts.save(names),
   error: () => {
@@ -64,21 +63,29 @@ const provider = new BaileysProvider(vault, {
     });
   },
 });
-// Saved contact names synced before Wagate stored them need one fresh copy of
-// WhatsApp's contacts. Fetch it once, after the connection settles; a failure
-// leaves the flag unset so the next connection tries again.
-let contactResync: ReturnType<typeof setTimeout> | undefined;
-function resyncContactsOnce() {
-  if (contactResync || settings.get("contacts.resynced") === "true") return;
-  contactResync = setTimeout(() => {
+// Account state synced before Wagate stored it (saved contact names; pins and
+// archives, which order the inbox) needs one fresh copy from WhatsApp. Fetch
+// what is missing once, after the connection settles; a failure leaves the
+// flags unset so the next connection tries again.
+const accountState = [
+  { flag: "contacts.resynced", collection: "critical_unblock_low" },
+  { flag: "chats.resynced", collection: "regular_low" },
+] as const;
+let accountResync: ReturnType<typeof setTimeout> | undefined;
+function resyncAccountStateOnce() {
+  const missing = accountState.filter((s) => settings.get(s.flag) !== "true");
+  if (accountResync || !missing.length) return;
+  accountResync = setTimeout(() => {
     provider
-      .resyncContacts()
+      .resyncAccountState(missing.map((s) => s.collection))
       .then(() => {
-        settings.set("contacts.resynced", "true");
-        log("info", "contacts.resynced");
+        for (const s of missing) settings.set(s.flag, "true");
+        log("info", "whatsapp.account_state.resynced", {
+          collections: missing.map((s) => s.collection).join(","),
+        });
       })
-      .catch(() => log("error", "contacts.resync.failed"))
-      .finally(() => (contactResync = undefined));
+      .catch(() => log("error", "whatsapp.account_state.resync_failed"))
+      .finally(() => (accountResync = undefined));
   }, 10000);
 }
 const sender = new MessageService(provider, messages, events);
@@ -96,7 +103,6 @@ const copilot = new CopilotService(
 );
 const broadcasts = new BroadcastService(
   new BroadcastRepository(db),
-  contacts,
   sender,
   provider,
   events,
@@ -159,7 +165,7 @@ let stopping = false;
 const shutdown = async () => {
   if (stopping) return;
   stopping = true;
-  clearTimeout(contactResync);
+  clearTimeout(accountResync);
   copilot.close();
   broadcasts.close();
   tunnel.close();

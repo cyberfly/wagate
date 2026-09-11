@@ -20,7 +20,8 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] Disconnect WhatsApp during a broadcast; it pauses with a visible reason and resumes after reconnecting.
 - [ ] The broadcast's send log shows each recipient's result and a timeline including the pause; **Save CSV** writes a file to Downloads that opens correctly in a spreadsheet.
 
-- [ ] After upgrading and connecting, chats with people saved in your phone show their saved names within a minute; `logs/app.log` records `contacts.resynced`.
+- [ ] After upgrading and connecting, chats with people saved in your phone show their saved names, and pinned and archived chats match WhatsApp within a minute; `logs/app.log` records `whatsapp.account_state.resynced`.
+- [ ] The inbox order matches WhatsApp's chat list: pinned chats first, then most recent activity; archived chats only under **Archived**.
 - [ ] A message from someone not in your contacts shows their WhatsApp profile name.
 
 Recovery checks:

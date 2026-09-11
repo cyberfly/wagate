@@ -100,6 +100,15 @@ ALTER TABLE broadcast_events_next RENAME TO broadcast_events;
 CREATE INDEX broadcast_events_broadcast ON broadcast_events(broadcast_id,id);
 PRAGMA user_version = 5;
 `;
+// Names now come from WhatsApp only, so broadcast CSV names are removed.
+// Chats gain WhatsApp's pin and archive state, which order the inbox.
+export const chatOrderSchema = `
+DELETE FROM contacts WHERE name IS NULL AND push_name IS NULL;
+ALTER TABLE contacts DROP COLUMN imported_name;
+ALTER TABLE chats ADD COLUMN pinned_at INTEGER;
+ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 6;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -107,4 +116,5 @@ export const migrations = [
   broadcastLogSchema,
   contactNamesSchema,
   deliverySchema,
+  chatOrderSchema,
 ];

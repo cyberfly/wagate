@@ -93,7 +93,9 @@ curl http://127.0.0.1:8787/v1/messages/send \
 
 Provide either `to` (international number, optional `+`) or `chatId` (WhatsApp JID), plus 1–10,000 characters of text. The response contains `success`, `messageId`, and the normalized message. Success means provider acceptance, not recipient delivery/read confirmation. Do not automatically retry timed-out sends; check delivery first to avoid duplicates.
 
-History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The list shows up to 1,000 recent chats. A chat's `name`, in the UI and `GET /v1/chats`, is the best name known, in this order: the name saved in your phone's contacts, WhatsApp's own chat name (such as a group subject), the name from a broadcast CSV, then the name the person set on their WhatsApp profile. Without any of these it is the chat ID. Saved names arrive through contact sync; after upgrading, Wagate fetches your contacts once, about 10 seconds after connecting. Profile names arrive with each incoming message. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled unless you start one in **API access**.
+History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The list shows up to 1,000 recent chats. A chat's `name`, in the UI and `GET /v1/chats`, comes from WhatsApp only, in this order: the name saved in your phone's contacts, WhatsApp's own chat name (such as a group subject), then the name the person set on their WhatsApp profile. Without any of these it is the chat ID. Saved names arrive through contact sync, and profile names with each incoming message.
+
+Chats follow WhatsApp's order: pinned chats first, most recently pinned first, then by last activity, with archived chats in a collapsed **Archived** section. WhatsApp's account sync mentions every chat you ever archived, muted, pinned or read, often with no activity time; those updates change chats Wagate already knows but never add one, and chats with no known activity stay out of the list until a message arrives. Account state synced before Wagate stored it (saved contact names, pins and archives) is fetched once, about 10 seconds after connecting. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled unless you start one in **API access**.
 
 ## Public access (Cloudflare Tunnel)
 
@@ -119,7 +121,7 @@ Quick-tunnel caveats, all from Cloudflare: the address changes on every start, `
 
 Messages go out with a random gap, 10–20 seconds by default and 5–600 seconds allowed. Sending many near-identical messages quickly is a common reason WhatsApp restricts a number, so keep the gap generous and send only to people who expect to hear from you. Only one broadcast sends at a time, and Wagate must stay open.
 
-Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, and **Cancel**. Sent messages also appear in the inbox, named from the CSV unless the person is saved in your phone's contacts. Safety rules follow the rest of Wagate:
+Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, and **Cancel**. Sent messages also appear in the inbox, named only as WhatsApp knows the person; CSV names label the broadcast and its send log, never chats. Safety rules follow the rest of Wagate:
 
 - If WhatsApp disconnects, the broadcast pauses before the next send; reconnect and **Resume**.
 - If a send fails, the delivery state is unknown. That recipient is marked **uncertain** and never retried, and the broadcast pauses so you can check your phone before resuming with the rest.
@@ -158,7 +160,7 @@ Desktop data uses Tauri’s app-data directory, normally `~/Library/Application 
 - `wagate.sqlite`: chats, messages, contact names, settings, hashed API keys, drafts, broadcasts, encrypted secrets.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, and version 4 contact names (backfilled from broadcasts already sent) to existing databases. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, and version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts) to existing databases. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
 
 WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere). There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 
