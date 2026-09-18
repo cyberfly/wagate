@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { setup } from "./helpers";
 import { normalizeChat } from "../src/messaging/baileys/normalizer";
+import { ChatRepository } from "../src/chats/chat-repository";
 const id = (n: number) => `6012000000${n}@s.whatsapp.net`;
 const seen = (s: ReturnType<typeof setup>, n: number, at: number) =>
   s.chats.apply({ id: id(n), type: "direct", lastMessageAt: at });
@@ -107,4 +108,32 @@ test("chat events take the latest of WhatsApp's timestamps and normalise pins", 
     type: "direct",
   });
   expect(normalizeChat({ id: "status@broadcast" })).toBeNull();
+});
+test("unlimited inbox pins are stored and survive WhatsApp pin updates", () => {
+  const s = setup();
+  s.db.transaction(() => {
+    for (let n = 1; n <= 1005; n++) {
+      seen(s, n, n * 1000);
+      s.chats.setPinned(id(n), true);
+    }
+  })();
+  expect(s.chats.list()).toHaveLength(1005);
+  expect(s.chats.list().every((c) => c.pinned)).toBe(true);
+  s.chats.apply({ id: id(1), type: "direct", pinnedAt: null });
+  expect(new ChatRepository(s.db).get(id(1))!.pinned).toBe(true);
+  s.chats.setPinned(id(1), false);
+  s.chats.apply({ id: id(1), type: "direct", pinnedAt: Date.now() });
+  expect(new ChatRepository(s.db).get(id(1))!.pinned).toBe(false);
+  expect(s.chats.list().at(-1)!.id).toBe(id(1));
+  s.close();
+});
+test("chat previews use the latest stored message", () => {
+  const s = setup();
+  const message = { id: "latest", provider: "whatsapp" as const, providerMessageId: "latest",
+    chatId: id(1), senderId: id(1), direction: "incoming" as const, type: "text" as const,
+    text: "Latest preview", timestamp: 2000 };
+  s.sender.receive(message, true);
+  s.sender.receive({ ...message, id: "old", providerMessageId: "old", text: "Older preview", timestamp: 1000 }, true);
+  expect(s.chats.list()[0].lastMessage).toBe("Latest preview");
+  s.close();
 });

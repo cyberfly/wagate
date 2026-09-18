@@ -1,4 +1,10 @@
 // Development-only fixture. Dynamically imported only in Vite preview mode.
+import {
+  automationPreviewRequest,
+  previewAutomations,
+  previewAutomationPosts,
+  previewGroups,
+} from "./automation-preview";
 import type {
   Snapshot,
   Message,
@@ -117,7 +123,7 @@ let config = {
     contextSize: 20,
     guardEnabled: true,
   },
-  hasKey: false,
+  hasKey: true,
   port: 8787,
 };
 const keys: {
@@ -221,19 +227,17 @@ function broadcastRequest(
         createdAt: now,
         updatedAt: now,
       },
-      recipients: recipients.map(
-        (r, i): BroadcastRecipient => ({
-          position: i + 1,
-          chatId: r.to + "@s.whatsapp.net",
-          label: r.label || r.to,
-          text: r.text,
-          status: "pending",
-          messageId: null,
-          error: null,
-          attemptedAt: null,
-          sentAt: null,
-        }),
-      ),
+      recipients: recipients.map((r, i): BroadcastRecipient => ({
+        position: i + 1,
+        chatId: r.to + "@s.whatsapp.net",
+        label: r.label || r.to,
+        text: r.text,
+        status: "pending",
+        messageId: null,
+        error: null,
+        attemptedAt: null,
+        sentAt: null,
+      })),
       events: [],
     };
     broadcasts.unshift(entry);
@@ -279,6 +283,45 @@ export async function previewRequest(
 ): Promise<unknown> {
   const url = new URL(path, "http://preview.local");
   const data = body as Record<string, unknown> | undefined;
+  if (
+    url.pathname === "/internal/groups" ||
+    url.pathname.startsWith("/internal/automations/") ||
+    url.pathname.startsWith("/internal/automation-posts/")
+  )
+    return automationPreviewRequest(
+      url.pathname,
+      method,
+      data,
+      (chatId, text) => {
+        const now = Date.now(),
+          id = crypto.randomUUID();
+        messages.push({
+          id,
+          provider: "whatsapp",
+          providerMessageId: id,
+          chatId,
+          senderId: "me",
+          direction: "outgoing",
+          type: "text",
+          text,
+          timestamp: now,
+        });
+        const existing = chats.find((c) => c.id === chatId);
+        if (existing) existing.lastMessageAt = now;
+        else
+          chats.unshift({
+            id: chatId,
+            provider: "whatsapp",
+            name: previewGroups.find((g) => g.id === chatId)?.name || chatId,
+            type: "group",
+            lastMessageAt: now,
+            aiMode: "off",
+            pinned: false,
+            archived: false,
+          });
+        return { success: true, messageId: id };
+      },
+    );
   if (url.pathname.startsWith("/internal/broadcasts"))
     return broadcastRequest(url.pathname, method, data);
   if (url.pathname === "/internal/snapshot") {
@@ -292,12 +335,24 @@ export async function previewRequest(
         ai: config.hasKey ? "configured" : "not_configured",
       },
       connection,
-      chats: [...chats],
+      chats: [...chats]
+        .sort(
+          (a, b) =>
+            Number(a.archived) - Number(b.archived) ||
+            Number(b.pinned) - Number(a.pinned) ||
+            (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0),
+        )
+        .map((c) => ({
+          ...c,
+          lastMessage: messages.filter((m) => m.chatId === c.id).at(-1)?.text,
+        })),
       messages: messages.filter((m) => m.chatId === id),
       drafts: drafts.filter((d) => d.chatId === id && d.status === "pending"),
       processing: [],
       tunnel,
       broadcasts: broadcasts.map(summary),
+      automations: previewAutomations.map((c) => ({ ...c })),
+      automationPosts: previewAutomationPosts.map((p) => ({ ...p })),
       alerts: [],
     } satisfies Snapshot;
   }
@@ -359,6 +414,14 @@ export async function previewRequest(
       status: path.endsWith("/connect") ? "connected" : "disconnected",
     };
     return connection;
+  }
+  if (path.endsWith("/pin")) {
+    const chat = chats.find(
+      (c) => c.id === decodeURIComponent(path.split("/")[3]),
+    );
+    if (!chat) throw new Error("Chat not found");
+    chat.pinned = data?.pinned === true;
+    return { ...chat };
   }
   if (path.endsWith("/mode")) {
     const chat = chats.find(

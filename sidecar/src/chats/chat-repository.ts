@@ -4,7 +4,9 @@ import type { Chat, ChatUpdate } from "../messaging/types";
 // a name from history sync), so contact names fill in for direct chats.
 const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name,c.id) AS name,
  c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode,
- c.pinned_at IS NOT NULL AS pinned,c.archived<>0 AS archived`;
+ COALESCE(c.inbox_pinned,c.pinned_at IS NOT NULL) AS pinned,c.archived<>0 AS archived,
+ (SELECT COALESCE(m.text,'[' || m.type || ']') FROM messages m WHERE m.chat_id=c.id
+  ORDER BY m.timestamp DESC,m.id DESC LIMIT 1) AS lastMessage`;
 const from = "chats c LEFT JOIN contacts k ON k.id=c.id";
 type Row = Omit<Chat, "pinned" | "archived"> & {
   pinned: number;
@@ -66,22 +68,30 @@ export class ChatRepository {
     );
   }
   /**
-   * WhatsApp's order: pinned chats, most recently pinned first, then by last
-   * activity, with archived chats after the rest. Chats with no known
-   * activity are left out.
+   * Local pin choices override synced WhatsApp pins. Most recently pinned
+   * first, then by last activity, with archived chats after the rest.
+   * Chats with no known activity are left out.
    */
   list() {
     return (
       this.db
         .query(
           `SELECT ${columns} FROM ${from} WHERE c.last_message_at IS NOT NULL
-           ORDER BY c.archived,c.pinned_at IS NULL,c.pinned_at DESC,c.last_message_at DESC,c.id LIMIT 1000`,
+           ORDER BY c.archived,COALESCE(c.inbox_pinned,c.pinned_at IS NOT NULL) DESC,
+           CASE WHEN c.inbox_pinned IS NULL THEN c.pinned_at ELSE c.inbox_pinned_at END DESC,
+           c.last_message_at DESC,c.id`,
         )
         .all() as Row[]
     ).map((row) => toChat(row)!);
   }
   setMode(id: string, mode: Chat["aiMode"]) {
     this.db.query("UPDATE chats SET ai_mode=? WHERE id=?").run(mode, id);
+    return this.get(id);
+  }
+  /** Local pins have no WhatsApp limit and survive subsequent account sync. */
+  setPinned(id: string, pinned: boolean) {
+    this.db.query("UPDATE chats SET inbox_pinned=?,inbox_pinned_at=? WHERE id=?")
+      .run(pinned ? 1 : 0, pinned ? Date.now() : null, id);
     return this.get(id);
   }
 }

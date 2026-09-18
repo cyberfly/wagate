@@ -20,6 +20,13 @@ export interface Chat {
   aiMode: "off" | "copilot";
   pinned: boolean;
   archived: boolean;
+  lastMessage?: string | null;
+}
+export interface GroupInfo {
+  id: string;
+  name: string;
+  memberCount: number;
+  isAdmin: boolean;
 }
 /** What WhatsApp reports about a chat. Missing fields leave stored ones alone. */
 export interface ChatUpdate {

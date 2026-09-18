@@ -1,15 +1,15 @@
 # Wagate
 
-A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus optional Cloudflare Tunnel publishing and CSV broadcasts. Autopilot, webhooks, MCP, multiple accounts, and media processing remain later milestones.
+A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus optional Cloudflare Tunnel publishing, CSV broadcasts, and scheduled AI group posts. Automatic chat replies, webhooks, MCP, multiple accounts, and media processing remain later milestones.
 
 ## Screenshots
 
-| | |
-| --- | --- |
-| ![Inbox](docs/screenshots/inbox.png) | ![WhatsApp connection](docs/screenshots/whatsapp-connection.png) |
-| **Inbox** — conversations synced to local SQLite, with app, sidecar, database, and AI status always in view. | **WhatsApp connection** — link once by QR from your phone's Linked Devices screen; the encrypted session restores on the next launch. |
-| ![AI Copilot](docs/screenshots/ai-copilot.png) | ![API access](docs/screenshots/api-access.png) |
-| **AI Copilot** — bring your own OpenRouter key. Copilot only drafts; nothing is sent without your approval. | **API access** — scoped, revocable keys for a loopback-only REST API at `127.0.0.1:8787`. |
+|                                                                                                             |                                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| ![Inbox](docs/screenshots/inbox.png)                                                                        | ![WhatsApp connection](docs/screenshots/whatsapp-connection.png)                                                                      |
+| **Inbox** — compact, full-height conversations synced to local SQLite, with unlimited local pins.           | **WhatsApp connection** — link once by QR from your phone's Linked Devices screen; the encrypted session restores on the next launch. |
+| ![AI Copilot](docs/screenshots/ai-copilot.png)                                                              | ![API access](docs/screenshots/api-access.png)                                                                                        |
+| **AI Copilot** — bring your own OpenRouter key. Copilot only drafts; nothing is sent without your approval. | **API access** — scoped, revocable keys for a loopback-only REST API at `127.0.0.1:8787`.                                             |
 
 ## Download
 
@@ -93,9 +93,11 @@ curl http://127.0.0.1:8787/v1/messages/send \
 
 Provide either `to` (international number, optional `+`) or `chatId` (WhatsApp JID), plus 1–10,000 characters of text. The response contains `success`, `messageId`, and the normalized message. Success means provider acceptance, not recipient delivery/read confirmation. Do not automatically retry timed-out sends; check delivery first to avoid duplicates.
 
-History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The list shows up to 1,000 recent chats. A chat's `name`, in the UI and `GET /v1/chats`, comes from WhatsApp only, in this order: the name saved in your phone's contacts, WhatsApp's own chat name (such as a group subject), then the name the person set on their WhatsApp profile. Without any of these it is the chat ID. Saved names arrive through contact sync, and profile names with each incoming message.
+History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The chat list has no count cap. A chat's `name`, in the UI and `GET /v1/chats`, comes from WhatsApp only, in this order: the name saved in your phone's contacts, WhatsApp's own chat name (such as a group subject), then the name the person set on their WhatsApp profile. Without any of these it is the chat ID. Saved names arrive through contact sync, and profile names with each incoming message.
 
-Chats follow WhatsApp's order: pinned chats first, most recently pinned first, then by last activity, with archived chats in a collapsed **Archived** section. WhatsApp's account sync mentions every chat you ever archived, muted, pinned or read, often with no activity time; those updates change chats Wagate already knows but never add one, and chats with no known activity stay out of the list until a message arrives. Account state synced before Wagate stored it (saved contact names, pins and archives) is fetched once, about 10 seconds after connecting. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled unless you start one in **API access**.
+The inbox fills the window with a compact navigation rail, searchable chat list, and conversation pane. Filter by **All**, **Pinned**, **Groups**, or **Archived**. Pin or unpin from a chat row or the conversation header; there is no pin count limit. Pins are saved in Wagate's local database, survive restarts, and override subsequent WhatsApp pin sync without changing pins on your phone. Until you make a local choice, a chat follows its synced WhatsApp pin state. Pinned chats appear first, most recently pinned first, followed by last activity. Enter sends a message; Shift + Enter adds a line. Unsent text stays with its chat when you switch conversations, and incoming messages preserve your scroll position when reading older messages. Narrow windows show one pane at a time with a back button.
+
+WhatsApp's account sync mentions every chat you ever archived, muted, pinned or read, often with no activity time; those updates change chats Wagate already knows but never add one, and chats with no known activity stay out of the list until a message arrives. Account state synced before Wagate stored it (saved contact names, pins and archives) is fetched once, about 10 seconds after connecting. SSE is not durable: re-fetch history after reconnecting. Keep the desktop app open for integrations to work. No tunnel is enabled unless you start one in **API access**.
 
 ## Public access (Cloudflare Tunnel)
 
@@ -138,6 +140,22 @@ Progress cards show sent, pending, and uncertain counts per broadcast, with **Pa
 
 Broadcasts are desktop-only (`/internal/broadcasts`); API keys and the Cloudflare tunnel cannot start one. Rendered messages are stored in SQLite alongside other message text.
 
+## Group automation
+
+1. Save your OpenRouter key and model in **AI Copilot**.
+2. Open **Group automation → Select groups**. Wagate fetches your WhatsApp groups and lets you add multiple groups where you are an admin. New groups start paused.
+3. Set each group's topics, language/style/audience instructions, and content source: original tips, current news with source links, or news with original practical takeaways.
+4. Choose **Require my approval** or **Post automatically** separately for each group. Choose specific weekdays with up to 12 times, or an interval of 1–168 hours within a same-day posting window. Each group has its own IANA time zone; Malaysia time is the default.
+5. Save and enable its schedule. **Generate preview** uses saved settings and always creates a draft, even for automatic groups. Drafts can be edited, approved for immediate posting, or dismissed. **Pause schedule** cancels future runs and discards an automatic post still being generated.
+
+Scheduling runs locally every 15 seconds while Wagate is open. WhatsApp must be connected. Missed slots more than five minutes late are recorded as skipped and advanced to a future time, rather than sent as a backlog. Interval schedules wait at least the selected number of hours from enabling or the previous run, then move to the next allowed posting window if necessary. Weekly schedules follow local wall time, skip nonexistent DST times, and do not repeat a wall-clock slot during DST fallback. An approval group has at most one pending post; subsequent slots are skipped until it is handled.
+
+News/mixed posts use OpenRouter's [web search server tool](https://openrouter.ai/docs/guides/features/server-tools/web-search), capped at one search and three results per generation. The response must include source citation annotations; missing citations fail the run instead of posting uncited model knowledge. Source URLs are included in the message. Search may incur additional OpenRouter credits, and the configured model/account must support the server tool. Original posts do not request web search. The AI receives the group's topics, style instructions, current date, and up to five previous automation posts to discourage repeats; it does not receive the group's conversation history or participant list.
+
+Settings, future run times, drafts, and posting history are stored in SQLite. Admin status is checked when saving, generating, and before sending. Failed scheduled generation or loss of admin access pauses the group. A send that throws or is interrupted becomes **uncertain**, pauses the group, and is never automatically retried. Check the group on your phone before resuming. Later WhatsApp delivery/read receipts update posting history; a rejection pauses scheduling. All configuration and approval routes are desktop-only and are absent from the public tunnel API.
+
+The UI preview supplies five fictional admin groups and simulates configuration, previews, approval, and pause/resume without real AI, search, or WhatsApp requests. Preview configuration resets on a browser reload and its scheduler does not post autonomously.
+
 ## Copilot
 
 1. Save an OpenRouter key, model ID, instructions, and context size in **AI Copilot**.
@@ -151,7 +169,7 @@ Broadcasts are desktop-only (`/internal/broadcasts`); API keys and the Cloudflar
 
 Screening is pattern-based, so it is deliberately conservative: ordinary requests such as “send me the OTP code” pass. Clearing the checkbox in **AI Copilot** removes all three layers and lets Copilot answer anything.
 
-Only selected recent chat context goes to OpenRouter: default 20 messages, configurable 1–50, truncated to 4,000 characters each. Responses are capped at 1,000 tokens. There are no tool calls, autonomous loops, or automatic sends. Switching Off during generation discards the result. Failed/interrupted draft sends become **uncertain** and cannot be blindly retried; verify on your phone first.
+Only selected recent chat context goes to OpenRouter for chat replies: default 20 messages, configurable 1–50, truncated to 4,000 characters each. Responses are capped at 1,000 tokens. Copilot replies have no tool calls or automatic sends. Group automation is separate and uses its own topic instructions and posting mode. Switching Off during reply generation discards the result. Failed/interrupted draft sends become **uncertain** and cannot be blindly retried; verify on your phone first.
 
 ## Data and security
 
@@ -160,13 +178,13 @@ Desktop data uses Tauri’s app-data directory, normally `~/Library/Application 
 - `wagate.sqlite`: chats, messages, contact names, settings, hashed API keys, drafts, broadcasts, encrypted secrets.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, and version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts) to existing databases. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts), version 7 unlimited local inbox pin overrides, and version 8 group automation settings and posting history to existing databases. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
 
 WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere). There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 
 Message contents remain plaintext locally in SQLite; full-disk encryption is separate. Logs omit message text, keys, raw provider errors, and authentication objects. Direct console logging from transitive Signal dependencies is replaced with fixed metadata to prevent accidental session disclosure.
 
-There is no analytics or upload service. WhatsApp communicates with WhatsApp while connected. OpenRouter receives recent context only when Copilot runs. API integrations receive only the access you grant.
+There is no analytics or upload service. WhatsApp communicates with WhatsApp while connected. OpenRouter receives recent chat context when Copilot runs, or group topic/style instructions and previous automation posts when group automation runs. News automation also uses OpenRouter's web search service. API integrations receive only the access you grant.
 
 ## Module boundaries
 

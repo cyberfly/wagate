@@ -13,9 +13,15 @@ import { TunnelService } from "../src/tunnel/tunnel-service";
 import { BroadcastRepository } from "../src/broadcast/broadcast-repository";
 import { BroadcastService } from "../src/broadcast/broadcast-service";
 import { ContactRepository } from "../src/contacts/contact-repository";
+import { AutomationRepository } from "../src/automation/automation-repository";
+import { AutomationService } from "../src/automation/automation-service";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
-import type { Message, ConnectionState } from "../src/messaging/types";
+import type {
+  Message,
+  ConnectionState,
+  GroupInfo,
+} from "../src/messaging/types";
 export const chatId = "60123456789@s.whatsapp.net";
 export function incoming(
   id = "one",
@@ -36,6 +42,24 @@ export function incoming(
 export class FakeProvider implements MessagingProvider {
   state: ConnectionState = { status: "connected" };
   sent: Message[] = [];
+  groups: GroupInfo[] = [
+    {
+      id: "120363000000000001@g.us",
+      name: "AI community",
+      memberCount: 20,
+      isAdmin: true,
+    },
+  ];
+  async listGroups() {
+    if (this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    return this.groups.map((g) => ({ ...g }));
+  }
+  async getGroup(id: string) {
+    const group = (await this.listGroups()).find((g) => g.id === id);
+    if (!group) throw new Error("Automation group is unavailable");
+    return group;
+  }
   async connect() {
     this.state = { status: "connected" };
   }
@@ -97,6 +121,21 @@ export function setup(ai?: AIProvider) {
     events,
     () => 0,
   );
+  const automationRepository = new AutomationRepository(db);
+  const automations = new AutomationService(
+    automationRepository,
+    ai || {
+      generate: async (request) => {
+        requests.push(request);
+        return "A useful community tip.";
+      },
+    },
+    provider,
+    sender,
+    chats,
+    settings,
+    events,
+  );
   const services = {
     provider,
     keys,
@@ -109,6 +148,7 @@ export function setup(ai?: AIProvider) {
     drafts,
     copilot,
     broadcasts,
+    automations,
     port: 8787,
     databaseHealthy: () => true,
     log: () => {},
@@ -158,6 +198,8 @@ export function setup(ai?: AIProvider) {
     sender,
     copilot,
     broadcasts,
+    automations,
+    automationRepository,
     contacts,
     requests,
     app,
@@ -167,6 +209,7 @@ export function setup(ai?: AIProvider) {
     close: () => {
       copilot.close();
       broadcasts.close();
+      automations.close();
       tunnel.close();
       db.close();
     },

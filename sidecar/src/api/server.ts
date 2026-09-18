@@ -17,6 +17,7 @@ import type { DraftRepository } from "../ai/draft-repository";
 import type { CopilotService } from "../ai/copilot-service";
 import type { TunnelService } from "../tunnel/tunnel-service";
 import type { BroadcastService } from "../broadcast/broadcast-service";
+import type { AutomationService } from "../automation/automation-service";
 interface Services {
   provider: MessagingProvider;
   keys: ApiKeys;
@@ -29,6 +30,7 @@ interface Services {
   drafts: DraftRepository;
   copilot: CopilotService;
   broadcasts: BroadcastService;
+  automations: AutomationService;
   desktopToken: string;
   port: number;
   tunnel?: TunnelService;
@@ -238,9 +240,45 @@ export function createApi(s: Services) {
         processing: s.copilot.status(),
         tunnel: s.tunnel?.status() ?? null,
         broadcasts: s.broadcasts.list(),
+        automations: s.automations.list(),
+        automationPosts: s.automations.posts(),
         alerts,
       });
     });
+    app.get("/internal/groups", async (c) =>
+      c.json({ groups: await s.provider.listGroups() }),
+    );
+    app.put("/internal/automations/:chatId", async (c) =>
+      c.json(
+        await s.automations.save(
+          resolveChatId(c.req.param("chatId")!),
+          await body(c),
+        ),
+      ),
+    );
+    app.post("/internal/automations/:chatId/pause", (c) =>
+      c.json(s.automations.pause(resolveChatId(c.req.param("chatId")!))),
+    );
+    app.post("/internal/automations/:chatId/resume", async (c) =>
+      c.json(await s.automations.resume(resolveChatId(c.req.param("chatId")!))),
+    );
+    app.post("/internal/automations/:chatId/preview", async (c) =>
+      c.json(
+        await s.automations.preview(resolveChatId(c.req.param("chatId")!)),
+      ),
+    );
+    app.post("/internal/automation-posts/:id/approve", async (c) => {
+      const data = await body(c);
+      return c.json(
+        await s.automations.approve(
+          c.req.param("id"),
+          string(data.text, "automation post"),
+        ),
+      );
+    });
+    app.delete("/internal/automation-posts/:id", (c) =>
+      c.json(s.automations.dismiss(c.req.param("id"))),
+    );
     app.post("/internal/connection/connect", async (c) => {
       s.settings.set("whatsapp.autoConnect", "true");
       await s.provider.connect();
@@ -291,6 +329,14 @@ export function createApi(s: Services) {
       s.settings.set("ai.configured", "false");
       return c.json({ success: true });
     });
+    app.put("/internal/chats/:chatId/pin", async (c) => {
+      const { pinned } = await body(c);
+      if (typeof pinned !== "boolean")
+        return c.json({ error: "pinned must be a boolean" }, 400);
+      const chatId = resolveChatId(c.req.param("chatId")!);
+      if (!s.chats.get(chatId)) return c.json({ error: "Chat not found" }, 404);
+      return c.json(s.chats.setPinned(chatId, pinned));
+    });
     app.put("/internal/chats/:chatId/mode", async (c) => {
       const { mode } = await body(c);
       if (mode !== "off" && mode !== "copilot")
@@ -323,7 +369,8 @@ export function createApi(s: Services) {
           minDelay: Number(data.minDelay),
           maxDelay: Number(data.maxDelay),
           recipients: data.recipients.map((r: unknown) => {
-            if (!r || typeof r !== "object") throw new Error("Invalid recipients");
+            if (!r || typeof r !== "object")
+              throw new Error("Invalid recipients");
             const { to, label, text } = r as Record<string, unknown>;
             return {
               to: string(to, "recipient", 100),
@@ -386,7 +433,7 @@ export function createApi(s: Services) {
   app.onError((error, c) => {
     s.log("error", "api.request.failed");
     const safe =
-      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare|Broadcast )/.test(
+      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare|Broadcast |Automation )/.test(
         error.message,
       );
     return c.json(

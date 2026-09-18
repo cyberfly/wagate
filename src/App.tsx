@@ -6,6 +6,7 @@ import { Inbox } from "./components/Inbox";
 import { Settings } from "./components/Settings";
 import { ApiAccess } from "./components/ApiAccess";
 import { Broadcast } from "./components/Broadcast";
+import { GroupAutomation } from "./components/GroupAutomation";
 const pages = {
   inbox: {
     label: "Inbox",
@@ -18,6 +19,12 @@ const pages = {
     title: "Broadcast",
     subtitle: "Reach a whole list, one personal message at a time.",
     icon: "⇉",
+  },
+  automation: {
+    label: "Group automation",
+    title: "Group automation",
+    subtitle: "Useful posts, at the right time, for each community.",
+    icon: "◷",
   },
   connection: {
     label: "WhatsApp",
@@ -62,7 +69,16 @@ export default function App() {
   const connected = snapshot?.connection.status === "connected";
   const sending = snapshot?.broadcasts.find((b) => b.status === "running");
   return (
-    <div className="app-shell">
+    <div
+      className={
+        "app-shell " +
+        (page === "inbox"
+          ? "inbox-shell"
+          : page === "automation"
+            ? "automation-shell"
+            : "")
+      }
+    >
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">w</div>
@@ -75,11 +91,14 @@ export default function App() {
           {Object.entries(pages).map(([key, item]) => (
             <button
               className={page === key ? "active" : ""}
+              title={item.label}
+              aria-label={item.label}
+              aria-current={page === key ? "page" : undefined}
               key={key}
               onClick={() => setPage(key as keyof typeof pages)}
             >
               <span>{item.icon}</span>
-              {item.label}
+              <span className="nav-label">{item.label}</span>
               {key === "inbox" && snapshot?.chats.length ? (
                 <small>{snapshot.chats.length}</small>
               ) : null}
@@ -104,51 +123,55 @@ export default function App() {
         </div>
       </aside>
       <main>
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">YOUR PRIVATE WORKSPACE</span>
-            <h1>{pages[page].title}</h1>
-            <p>{pages[page].subtitle}</p>
-          </div>
-          <button
-            className={"status-button " + (connected ? "online" : "")}
-            onClick={() => setPage("connection")}
-          >
-            <span className="dot" />
-            {snapshot
-              ? statusLabel[snapshot.connection.status]
-              : "Gateway starting"}
-          </button>
-        </header>
-        <div className="health-strip">
-          <span>
-            <i className="dot" />
-            App <strong>Running</strong>
-          </span>
-          <span>
-            <i className={"dot " + (error ? "bad" : "")} />
-            Sidecar{" "}
-            <strong>
-              {error ? "Unavailable" : snapshot ? "Running" : "Starting"}
-            </strong>
-          </span>
-          <span>
-            Database{" "}
-            <strong>
-              {snapshot?.health.database === "connected"
-                ? "Connected"
-                : "Checking"}
-            </strong>
-          </span>
-          <span>
-            AI{" "}
-            <strong>
-              {snapshot?.health.ai === "configured"
-                ? "Configured"
-                : "Not configured"}
-            </strong>
-          </span>
-        </div>
+        {page !== "inbox" ? (
+          <>
+            <header className="topbar">
+              <div>
+                <span className="eyebrow">YOUR PRIVATE WORKSPACE</span>
+                <h1>{pages[page].title}</h1>
+                <p>{pages[page].subtitle}</p>
+              </div>
+              <button
+                className={"status-button " + (connected ? "online" : "")}
+                onClick={() => setPage("connection")}
+              >
+                <span className="dot" />
+                {snapshot
+                  ? statusLabel[snapshot.connection.status]
+                  : "Gateway starting"}
+              </button>
+            </header>
+            <div className="health-strip">
+              <span>
+                <i className="dot" />
+                App <strong>Running</strong>
+              </span>
+              <span>
+                <i className={"dot " + (error ? "bad" : "")} />
+                Sidecar{" "}
+                <strong>
+                  {error ? "Unavailable" : snapshot ? "Running" : "Starting"}
+                </strong>
+              </span>
+              <span>
+                Database{" "}
+                <strong>
+                  {snapshot?.health.database === "connected"
+                    ? "Connected"
+                    : "Checking"}
+                </strong>
+              </span>
+              <span>
+                AI{" "}
+                <strong>
+                  {snapshot?.health.ai === "configured"
+                    ? "Configured"
+                    : "Not configured"}
+                </strong>
+              </span>
+            </div>
+          </>
+        ) : null}
         {error || notice ? (
           <div role="alert" className="alert">
             <span>{notice || error}</span>
@@ -180,6 +203,16 @@ export default function App() {
             <Settings busy={busy} act={act} />
           ) : page === "api" ? (
             <ApiAccess busy={busy} act={act} tunnel={snapshot?.tunnel} />
+          ) : page === "automation" ? (
+            <GroupAutomation
+              configurations={snapshot?.automations || []}
+              posts={snapshot?.automationPosts || []}
+              connected={connected && !error}
+              aiReady={snapshot?.health.ai === "configured"}
+              busy={busy}
+              act={act}
+              openSettings={() => setPage("settings")}
+            />
           ) : page === "broadcast" ? (
             <Broadcast
               broadcasts={snapshot?.broadcasts || []}
@@ -188,51 +221,32 @@ export default function App() {
               act={act}
             />
           ) : (
-            <>
-              <div className="section-heading">
-                <div>
-                  <h2>Conversations</h2>
-                  <span>
-                    {connected
-                      ? "Synced with WhatsApp"
-                      : "Connect WhatsApp to bring your conversations here"}
-                  </span>
-                </div>
-                {!connected ? (
-                  <button
-                    className="secondary"
-                    onClick={() => setPage("connection")}
-                  >
-                    Connect WhatsApp ↗
-                  </button>
-                ) : (
-                  <span className="muted">↻ Updates every 2 seconds</span>
-                )}
-              </div>
-              <Inbox
-                chats={snapshot?.chats || []}
-                messages={
-                  snapshot?.messages.filter((m) => m.chatId === selected) || []
-                }
-                drafts={
-                  snapshot?.drafts.filter((d) => d.chatId === selected) || []
-                }
-                selected={selected}
-                select={setSelected}
-                connected={connected && !error}
-                processing={
-                  !!selected && !!snapshot?.processing.includes(selected)
-                }
-                busy={busy}
-                act={act}
-              />
-            </>
+            <Inbox
+              chats={snapshot?.chats || []}
+              messages={
+                snapshot?.messages.filter((m) => m.chatId === selected) || []
+              }
+              drafts={
+                snapshot?.drafts.filter((d) => d.chatId === selected) || []
+              }
+              selected={selected}
+              select={setSelected}
+              connected={connected && !error}
+              processing={
+                !!selected && !!snapshot?.processing.includes(selected)
+              }
+              busy={busy}
+              act={act}
+              connect={() => setPage("connection")}
+            />
           )}
         </div>
-        <footer>
-          <span>◈ Messages stored on this device</span>
-          <span>No analytics. AI is opt-in.</span>
-        </footer>
+        {page !== "inbox" ? (
+          <footer>
+            <span>◈ Messages stored on this device</span>
+            <span>No analytics. AI is opt-in.</span>
+          </footer>
+        ) : null}
       </main>
     </div>
   );

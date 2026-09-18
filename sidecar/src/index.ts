@@ -19,6 +19,8 @@ import { TunnelService } from "./tunnel/tunnel-service";
 import { BroadcastRepository } from "./broadcast/broadcast-repository";
 import { BroadcastService } from "./broadcast/broadcast-service";
 import { ContactRepository } from "./contacts/contact-repository";
+import { AutomationRepository } from "./automation/automation-repository";
+import { AutomationService } from "./automation/automation-service";
 process.umask(0o077);
 const port = Number(process.env.WAGATE_PORT || 8787);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
@@ -49,8 +51,11 @@ const provider = new BaileysProvider(vault, {
   message: (message, live) => sender.receive(message, live),
   receipt: (receipt) => {
     if (receipt.status === "failed")
-      log("error", "whatsapp.message.rejected", { code: receipt.error ?? "none" });
+      log("error", "whatsapp.message.rejected", {
+        code: receipt.error ?? "none",
+      });
     broadcasts.receipt(receipt);
+    automations.receipt(receipt);
   },
   chat: (chat) => {
     if (chats.apply(chat)) events.publish("chat.updated", { id: chat.id });
@@ -107,6 +112,15 @@ const broadcasts = new BroadcastService(
   provider,
   events,
 );
+const automations = new AutomationService(
+  new AutomationRepository(db),
+  ai,
+  provider,
+  sender,
+  chats,
+  settings,
+  events,
+);
 const desktopToken = process.env.WAGATE_DESKTOP_TOKEN || "";
 delete process.env.WAGATE_DESKTOP_TOKEN;
 const databaseHealthy = () => {
@@ -129,6 +143,7 @@ const services = {
   drafts,
   copilot,
   broadcasts,
+  automations,
   port,
   databaseHealthy,
   log,
@@ -161,6 +176,7 @@ try {
   process.exit(1);
 }
 log("info", "sidecar.started", { port });
+automations.start();
 let stopping = false;
 const shutdown = async () => {
   if (stopping) return;
@@ -168,6 +184,7 @@ const shutdown = async () => {
   clearTimeout(accountResync);
   copilot.close();
   broadcasts.close();
+  automations.close();
   tunnel.close();
   server.stop(true);
   await provider.disconnect();

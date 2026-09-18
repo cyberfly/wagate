@@ -109,6 +109,30 @@ ALTER TABLE chats ADD COLUMN pinned_at INTEGER;
 ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 6;
 `;
+// NULL follows WhatsApp; 0 or 1 is a persistent local inbox override.
+export const inboxPinsSchema = `
+ALTER TABLE chats ADD COLUMN inbox_pinned INTEGER CHECK(inbox_pinned IN (0,1));
+ALTER TABLE chats ADD COLUMN inbox_pinned_at INTEGER;
+PRAGMA user_version = 7;
+`;
+export const groupAutomationSchema = `
+CREATE TABLE group_automations (
+ chat_id TEXT PRIMARY KEY REFERENCES chats(id), group_name TEXT NOT NULL,
+ topics TEXT NOT NULL, instructions TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('original','news','mixed')),
+ delivery TEXT NOT NULL CHECK(delivery IN ('automatic','approval')), time_zone TEXT NOT NULL,
+ schedule TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, next_run_at INTEGER,
+ updated_at INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE automation_posts (
+ id TEXT PRIMARY KEY, chat_id TEXT NOT NULL REFERENCES group_automations(chat_id), group_name TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('generating','pending','sending','sent','delivered','read','failed','uncertain','dismissed','skipped')),
+ text TEXT NOT NULL DEFAULT '', error TEXT, scheduled_for INTEGER, created_at INTEGER NOT NULL,
+ sent_at INTEGER, message_id TEXT, provider_message_id TEXT, UNIQUE(chat_id,scheduled_for)
+);
+CREATE INDEX automation_posts_chat ON automation_posts(chat_id,created_at DESC,id DESC);
+CREATE INDEX automation_posts_receipt ON automation_posts(provider_message_id);
+PRAGMA user_version = 8;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -117,4 +141,6 @@ export const migrations = [
   contactNamesSchema,
   deliverySchema,
   chatOrderSchema,
+  inboxPinsSchema,
+  groupAutomationSchema,
 ];

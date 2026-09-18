@@ -4,6 +4,7 @@ import type {
   ContactNames,
   Message,
   MessageReceipt,
+  GroupInfo,
 } from "./types";
 export interface ProviderEvents {
   connection: (state: ConnectionState) => void;
@@ -19,5 +20,7 @@ export interface MessagingProvider {
   logout(): Promise<void>;
   sendText(chatId: string, text: string): Promise<Message>;
   getConnectionState(): ConnectionState;
+  listGroups(): Promise<GroupInfo[]>;
+  getGroup(id: string): Promise<GroupInfo>;
 }
 // Historical reads deliberately live in repositories: SQLite is the source of truth.

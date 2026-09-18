@@ -22,7 +22,18 @@ export type {
   Broadcast,
   BroadcastEvent,
   BroadcastRecipient,
+  GroupInfo,
 } from "../../sidecar/src/messaging/types";
+export type {
+  AutomationPost,
+  AutomationSchedule,
+  GroupAutomation,
+  GroupAutomationInput,
+} from "../../sidecar/src/automation/types";
+import type {
+  AutomationPost,
+  GroupAutomation,
+} from "../../sidecar/src/automation/types";
 import type {
   Chat,
   Message,
@@ -47,6 +58,8 @@ export interface Snapshot {
   processing: string[];
   tunnel: TunnelState | null;
   broadcasts: Broadcast[];
+  automations: GroupAutomation[];
+  automationPosts: AutomationPost[];
   alerts: { id: number; error: string }[];
 }
 export const tunnelLabel: Record<string, string> = {
@@ -73,7 +86,9 @@ export function chatTitle(chat: Pick<Chat, "id" | "name">) {
 }
 /** `+60123456789` for phone-number chats; other ids are not dialable. */
 export function phoneLabel(id: string) {
-  return id.endsWith("@s.whatsapp.net") ? "+" + displayName(id) : displayName(id);
+  return id.endsWith("@s.whatsapp.net")
+    ? "+" + displayName(id)
+    : displayName(id);
 }
 export function initials(title: string) {
   const words = title.match(/\p{L}[\p{L}\p{M}'’-]*/gu);
