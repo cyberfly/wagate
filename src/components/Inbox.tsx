@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   request,
   displayName,
+  chatTitle,
+  phoneLabel,
+  initials,
   type Chat,
   type Message,
   type Draft,
@@ -11,51 +14,131 @@ interface Props {
   messages: Message[];
   drafts: Draft[];
   selected: string | null;
-  select: (id: string) => void;
+  select: (id: string | null) => void;
+  connect: () => void;
   connected: boolean;
   processing: boolean;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
 }
+/** Time today, otherwise the date, like WhatsApp's chat list. */
+function lastActive(ms: number) {
+  const d = new Date(ms);
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 export function Inbox(p: Props) {
   const [search, setSearch] = useState(""),
-    [text, setText] = useState(""),
+    [compositions, setCompositions] = useState<Record<string, string>>({}),
     [recipient, setRecipient] = useState(""),
     [newChat, setNewChat] = useState(false),
-    [draftText, setDraftText] = useState("");
+    [draftText, setDraftText] = useState(""),
+    [filter, setFilter] = useState<"All" | "Pinned" | "Groups" | "Archived">("All");
   const bottom = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
+  const nearBottom = useRef(true);
+  const previousChat = useRef<string | null>(null);
+  const text = p.selected ? compositions[p.selected] || "" : "";
+  const setText = (value: string, id = p.selected) => {
+    if (id) setCompositions((current) => ({ ...current, [id]: value }));
+  };
   const chat = p.chats.find((c) => c.id === p.selected);
   const draft = p.drafts.find((d) => d.status === "pending");
   useEffect(() => {
-    setText("");
-  }, [p.selected]);
+    const input = composer.current;
+    if (input) {
+      input.style.height = "0px";
+      input.style.height = Math.min(140, Math.max(42, input.scrollHeight)) + "px";
+    }
+  }, [text, p.selected]);
   useEffect(() => {
     setDraftText(draft?.text || "");
   }, [draft?.id, draft?.text]);
   useEffect(() => {
     const pane = bottom.current?.parentElement;
-    pane?.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
+    const switched = previousChat.current !== p.selected;
+    if (switched || nearBottom.current) {
+      pane?.scrollTo({ top: pane.scrollHeight, behavior: "instant" });
+      nearBottom.current = true;
+    }
+    previousChat.current = p.selected;
   }, [p.messages.at(-1)?.id, p.selected]);
-  const send = () =>
-    p.act(async () => {
-      await request("/v1/messages/send", "POST", { chatId: p.selected, text });
-      setText("");
+  // The sidecar orders effective inbox pins first, then by activity.
+  const query = search.trim().toLowerCase();
+  const pinnedCount = p.chats.filter((c) => c.pinned).length;
+  const found = p.chats.filter((c) => {
+    if (!(chatTitle(c) + c.id).toLowerCase().includes(query)) return false;
+    if (filter === "Pinned") return c.pinned;
+    if (filter === "Archived") return c.archived;
+    if (c.archived) return false;
+    return filter !== "Groups" || c.type === "group";
+  });
+  const pin = (c: Chat) => void p.act(() => request(
+    "/internal/chats/" + encodeURIComponent(c.id) + "/pin", "PUT", { pinned: !c.pinned },
+  ));
+  const item = (c: Chat) => (
+    <div key={c.id} className={"chat-row " + (c.id === p.selected ? "selected" : "")}>
+    <button
+      className={"chat-item " + (c.id === p.selected ? "selected" : "")}
+      aria-pressed={c.id === p.selected}
+      onClick={() => p.select(c.id)}
+    >
+      <span className="avatar">{initials(chatTitle(c))}</span>
+      <span className="chat-info">
+        <strong>{chatTitle(c)}</strong>
+        <small>
+          {c.lastMessage || (c.aiMode === "copilot"
+            ? "✧ Copilot enabled"
+            : c.type === "group"
+              ? "Group conversation"
+              : phoneLabel(c.id))}
+        </small>
+      </span>
+      <span className="chat-meta">
+        {c.lastMessageAt ? <time>{lastActive(c.lastMessageAt)}</time> : null}
+        {c.pinned ? <small>Pinned</small> : null}
+      </span>
+    </button>
+    <button className={"pin-button " + (c.pinned ? "pinned" : "")}
+      title={c.pinned ? "Unpin chat" : "Pin chat"}
+      aria-label={(c.pinned ? "Unpin " : "Pin ") + chatTitle(c)}
+      aria-pressed={c.pinned} disabled={p.busy} onClick={() => pin(c)}>
+      <PinIcon />
+    </button>
+    </div>
+  );
+  const send = () => {
+    if (!p.selected || !text.trim() || p.busy || !p.connected) return;
+    const id = p.selected, sentText = text;
+    nearBottom.current = true;
+    return p.act(async () => {
+      await request("/v1/messages/send", "POST", { chatId: id, text: sentText });
+      setCompositions((current) => current[id] === sentText ? { ...current, [id]: "" } : current);
     });
+  };
   return (
-    <section className="inbox panel">
+    <section className={"inbox panel " + (p.selected ? "has-selection" : "")}>
       <aside className="chat-list">
         <div className="chat-list-title">
           <strong>
-            Conversations <span className="count">{p.chats.length}</span>
+            Chats <span className="count">{p.chats.length}</span>
           </strong>
           <button
             className="icon-button"
             aria-label="New conversation"
+            aria-expanded={newChat}
             onClick={() => setNewChat(!newChat)}
           >
             ＋
           </button>
         </div>
+        <button className={"inbox-connection " + (p.connected ? "online" : "")}
+          onClick={p.connect}>
+          <span className={"dot " + (p.connected ? "" : "bad")} />
+          {p.connected ? "WhatsApp connected" : "Connect WhatsApp"}
+          <span>↗</span>
+        </button>
         {newChat ? (
           <form
             className="new-chat"
@@ -86,51 +169,25 @@ export function Inbox(p: Props) {
         <div className="search">
           <input
             aria-label="Search chats"
-            placeholder="Search conversations…"
+            placeholder="Search or start a new chat"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
+        <div className="chat-filters" aria-label="Filter chats">
+          {(["All", "Pinned", "Groups", "Archived"] as const).map((value) => (
+            <button key={value} aria-pressed={filter === value}
+              className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>
+              {value}{value === "Pinned" ? ` (${pinnedCount})` : ""}
+            </button>
+          ))}
+        </div>
+        {filter === "Pinned" ? <div className="pin-hint">Pin as many chats as you like. Saved on this device.</div> : null}
         <div className="chat-items">
-          {p.chats
-            .filter((c) =>
-              (c.name + c.id).toLowerCase().includes(search.toLowerCase()),
-            )
-            .map((c) => (
-              <button
-                key={c.id}
-                className={
-                  "chat-item " + (c.id === p.selected ? "selected" : "")
-                }
-                onClick={() => p.select(c.id)}
-              >
-                <span className="avatar">
-                  {(c.name === c.id ? displayName(c.id) : c.name)
-                    .slice(0, 2)
-                    .toUpperCase()}
-                </span>
-                <span className="chat-info">
-                  <strong>
-                    {c.name === c.id ? displayName(c.id) : c.name}
-                  </strong>
-                  <small>
-                    {c.aiMode === "copilot"
-                      ? "✧ Copilot enabled"
-                      : c.type === "group"
-                        ? "Group conversation"
-                        : displayName(c.id)}
-                  </small>
-                </span>
-                {c.lastMessageAt ? (
-                  <time>
-                    {new Date(c.lastMessageAt).toLocaleDateString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                    })}
-                  </time>
-                ) : null}
-              </button>
-            ))}
+          {found.map(item)}
+          {p.chats.length > 0 && found.length === 0 ? (
+            <div className="list-empty">{query ? "No matching chats" : `No ${filter.toLowerCase()} chats`}</div>
+          ) : null}
           {p.chats.length === 0 ? (
             <div className="list-empty">
               <p>No conversations yet</p>
@@ -145,17 +202,23 @@ export function Inbox(p: Props) {
         {p.selected ? (
           <>
             <header className="conversation-header">
-              <div>
-                <h3>
-                  {chat?.name && chat.name !== chat.id
-                    ? chat.name
-                    : displayName(p.selected)}
-                </h3>
+              <button className="icon-button back-to-chats" aria-label="Back to chats" onClick={() => p.select(null)}>←</button>
+              <span className="avatar">{initials(chatTitle(chat ?? { id: p.selected, name: "" }))}</span>
+              <div className="conversation-identity">
+                <h3>{chatTitle(chat ?? { id: p.selected, name: "" })}</h3>
                 <small>
-                  {chat?.type === "group" ? "Group" : "WhatsApp"} ·{" "}
-                  {p.connected ? "Ready to send" : "Disconnected"}
+                  {chat?.type === "group"
+                    ? "Group"
+                    : chat && chat.name !== chat.id
+                      ? phoneLabel(chat.id)
+                      : "WhatsApp"}{" "}
+                  · {p.connected ? "Ready to send" : "Disconnected"}
                 </small>
               </div>
+              {chat ? <button className={"header-pin icon-button " + (chat.pinned ? "pinned" : "")}
+                title={chat.pinned ? "Unpin chat" : "Pin chat"}
+                aria-label={chat.pinned ? "Unpin current chat" : "Pin current chat"}
+                aria-pressed={chat.pinned} disabled={p.busy} onClick={() => pin(chat)}><PinIcon /></button> : null}
               <label className="mode-picker">
                 AI mode
                 <select
@@ -185,19 +248,26 @@ export function Inbox(p: Props) {
                 You review every send.
               </div>
             ) : null}
-            <div className="messages" aria-live="polite">
+            <div className="messages" aria-live="polite" onScroll={(e) => {
+              const pane = e.currentTarget;
+              nearBottom.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
+            }}>
               {p.messages.length ? (
                 <div className="history-note">
-                  Recent 50 messages · Full stored history is available through
-                  the API
+                  Recent messages stored on this device
                 </div>
               ) : (
                 <div className="list-empty">
                   No stored messages in this conversation.
                 </div>
               )}
-              {p.messages.map((m) => (
-                <MessageBubble key={m.id} message={m} />
+              {p.messages.map((m, index) => (
+                <Fragment key={m.id}>
+                  {index === 0 || new Date(p.messages[index - 1].timestamp).toDateString() !== new Date(m.timestamp).toDateString() ? (
+                    <div className="message-day">{new Date(m.timestamp).toDateString() === new Date().toDateString() ? "Today" : new Date(m.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div>
+                  ) : null}
+                  <MessageBubble message={m} group={chat?.type === "group"} />
+                </Fragment>
               ))}
               <div ref={bottom} />
             </div>
@@ -280,6 +350,8 @@ export function Inbox(p: Props) {
               }}
             >
               <textarea
+                ref={composer}
+                rows={1}
                 aria-label="Message"
                 placeholder={
                   p.connected
@@ -288,7 +360,7 @@ export function Inbox(p: Props) {
                 }
                 value={text}
                 maxLength={10000}
-                disabled={!p.connected}
+                disabled={!p.connected || p.busy}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
                   if (
@@ -305,29 +377,33 @@ export function Inbox(p: Props) {
                 type="submit"
                 disabled={p.busy || !p.connected || !text.trim()}
               >
-                Send ↗
+                <span aria-hidden="true">➤</span><span className="visually-hidden">Send message</span>
               </button>
             </form>
           </>
         ) : (
           <div className="conversation-empty">
-            <div className="empty-icon">↗</div>
-            <h2>Your conversations, closer.</h2>
+            <div className="empty-icon">▤</div>
+            <h2>Wagate Inbox</h2>
             <p>
               Choose a chat to read messages and reply.
               <br />
               Everything is stored on this device.
             </p>
+            <small>Unlimited pinned chats · Enter to send · Shift + Enter for a new line</small>
           </div>
         )}
       </div>
     </section>
   );
 }
-function MessageBubble({ message: m }: { message: Message }) {
+function PinIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5-4 1-3 5v3l-7-7h3l5-3zM9 15l-6 6" /></svg>;
+}
+function MessageBubble({ message: m, group }: { message: Message; group?: boolean }) {
   return (
     <article className={"message " + m.direction}>
-      {m.direction === "incoming" ? (
+      {m.direction === "incoming" && group ? (
         <small>{displayName(m.senderId)}</small>
       ) : null}
       {m.type !== "text" ? (
@@ -337,9 +413,7 @@ function MessageBubble({ message: m }: { message: Message }) {
       ) : null}
       <p>{m.text}</p>
       <time>
-        {new Date(m.timestamp).toLocaleString(undefined, {
-          month: "short",
-          day: "numeric",
+        {new Date(m.timestamp).toLocaleTimeString(undefined, {
           hour: "2-digit",
           minute: "2-digit",
         })}

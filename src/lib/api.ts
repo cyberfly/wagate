@@ -19,13 +19,36 @@ export type {
   Message,
   Draft,
   ConnectionState,
+  Broadcast,
+  BroadcastEvent,
+  BroadcastRecipient,
+  GroupInfo,
 } from "../../sidecar/src/messaging/types";
+export type {
+  AutomationPost,
+  AutomationSchedule,
+  GroupAutomation,
+  GroupAutomationInput,
+} from "../../sidecar/src/automation/types";
+import type {
+  AutomationPost,
+  GroupAutomation,
+} from "../../sidecar/src/automation/types";
 import type {
   Chat,
   Message,
   Draft,
   ConnectionState,
+  Broadcast,
 } from "../../sidecar/src/messaging/types";
+export interface TunnelState {
+  status: "off" | "installing" | "starting" | "online" | "error";
+  url: string | null;
+  error: string | null;
+  installed: boolean;
+  supported: boolean;
+  progress: number | null;
+}
 export interface Snapshot {
   health: { status: string; database: string; version: string; ai: string };
   connection: ConnectionState;
@@ -33,8 +56,19 @@ export interface Snapshot {
   messages: Message[];
   drafts: Draft[];
   processing: string[];
+  tunnel: TunnelState | null;
+  broadcasts: Broadcast[];
+  automations: GroupAutomation[];
+  automationPosts: AutomationPost[];
   alerts: { id: number; error: string }[];
 }
+export const tunnelLabel: Record<string, string> = {
+  off: "Private",
+  installing: "Downloading cloudflared",
+  starting: "Opening tunnel",
+  online: "Public",
+  error: "Needs attention",
+};
 export const statusLabel: Record<string, string> = {
   disconnected: "Disconnected",
   connecting: "Connecting",
@@ -45,4 +79,24 @@ export const statusLabel: Record<string, string> = {
 };
 export function displayName(id: string) {
   return id.split("@")[0];
+}
+/** A chat's name, or its number when WhatsApp and your contacts know none. */
+export function chatTitle(chat: Pick<Chat, "id" | "name">) {
+  return chat.name && chat.name !== chat.id ? chat.name : displayName(chat.id);
+}
+/** `+60123456789` for phone-number chats; other ids are not dialable. */
+export function phoneLabel(id: string) {
+  return id.endsWith("@s.whatsapp.net")
+    ? "+" + displayName(id)
+    : displayName(id);
+}
+export function initials(title: string) {
+  const words = title.match(/\p{L}[\p{L}\p{M}'’-]*/gu);
+  return words
+    ? words
+        .slice(0, 2)
+        .map((w) => w[0])
+        .join("")
+        .toUpperCase()
+    : title.slice(0, 2);
 }

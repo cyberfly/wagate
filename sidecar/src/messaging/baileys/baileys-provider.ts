@@ -10,7 +10,13 @@ import type { MessagingProvider, ProviderEvents } from "../messaging-provider";
 import type { ConnectionState } from "../types";
 import { Vault } from "../../security/vault";
 import { createAuth } from "./auth";
-import { normalizeMessage } from "./normalizer";
+import { groupInfo } from "./groups";
+import {
+  normalizeChat,
+  normalizeContacts,
+  normalizeMessage,
+  normalizeReceipt,
+} from "./normalizer";
 export class BaileysProvider implements MessagingProvider {
   private socket?: WASocket;
   private state: ConnectionState = { status: "disconnected" };
@@ -25,6 +31,21 @@ export class BaileysProvider implements MessagingProvider {
   ) {}
   getConnectionState() {
     return { ...this.state };
+  }
+  async listGroups() {
+    const socket = this.socket;
+    if (!socket || this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    const groups = await socket.groupFetchAllParticipating();
+    return Object.values(groups)
+      .map((g) => groupInfo(g, socket.user))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async getGroup(id: string) {
+    const socket = this.socket;
+    if (!socket || this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    return groupInfo(await socket.groupMetadata(id), socket.user);
   }
   private update(state: ConnectionState) {
     this.state = state;
@@ -158,8 +179,22 @@ export class BaileysProvider implements MessagingProvider {
           }
         }
       });
-      socket.ev.on("messaging-history.set", ({ chats, messages }) => {
+      // sendMessage resolves once the message is written to the socket. Only
+      // these updates say whether WhatsApp took it and whether it arrived.
+      socket.ev.on("messages.update", (updates) => {
         if (!active()) return;
+        for (const update of updates) {
+          try {
+            const receipt = normalizeReceipt(update);
+            if (receipt) this.events.receipt(receipt);
+          } catch {
+            this.events.error("Could not record a message receipt");
+          }
+        }
+      });
+      socket.ev.on("messaging-history.set", ({ chats, contacts, messages }) => {
+        if (!active()) return;
+        this.receiveContacts(contacts);
         for (const chat of chats) this.receiveChat(chat);
         for (const raw of messages) {
           try {
@@ -176,6 +211,14 @@ export class BaileysProvider implements MessagingProvider {
       socket.ev.on("chats.update", (chats) => {
         if (active()) for (const chat of chats) this.receiveChat(chat);
       });
+      // Saved names arrive from contact sync; Baileys also turns each incoming
+      // message's push name into a contacts.update.
+      socket.ev.on("contacts.upsert", (contacts) => {
+        if (active()) this.receiveContacts(contacts);
+      });
+      socket.ev.on("contacts.update", (contacts) => {
+        if (active()) this.receiveContacts(contacts);
+      });
     } catch (error) {
       if (generation === this.generation) {
         this.stopped = true;
@@ -190,24 +233,43 @@ export class BaileysProvider implements MessagingProvider {
       }
     }
   }
-  private receiveChat(chat: {
-    id?: string | null;
-    name?: string | null;
-    conversationTimestamp?: unknown;
-  }) {
-    if (!chat.id || !/@(s\.whatsapp\.net|lid|g\.us)$/.test(chat.id)) return;
+  private receiveChat(chat: Parameters<typeof normalizeChat>[0]) {
     try {
-      this.events.chat({
-        id: jidNormalizedUser(chat.id),
-        provider: "whatsapp",
-        name: chat.name || jidNormalizedUser(chat.id),
-        type: chat.id.endsWith("@g.us") ? "group" : "direct",
-        lastMessageAt: chat.conversationTimestamp
-          ? Number(chat.conversationTimestamp) * 1000
-          : null,
-      });
+      const update = normalizeChat(chat);
+      if (update) this.events.chat(update);
     } catch {
       this.events.error("Could not store chat metadata");
+    }
+  }
+  /**
+   * Downloads account-state collections from scratch: saved contacts live in
+   * critical_unblock_low, pins and archives in regular_low. That sync only
+   * sends changes after the first pairing, so state synced before Wagate
+   * stored it never arrives otherwise.
+   */
+  async resyncAccountState(
+    collections: ("critical_unblock_low" | "regular_low")[],
+  ) {
+    const socket = this.socket;
+    if (!socket || this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    // No stored version makes WhatsApp return the whole collection, as it does
+    // on first pairing.
+    await socket.authState.keys.set({
+      "app-state-sync-version": Object.fromEntries(
+        collections.map((name) => [name, null]),
+      ),
+    });
+    // Replayed as live changes: during an initial sync Baileys holds a chat's
+    // pin or archive back until it sees that chat in the same sync.
+    await socket.resyncAppState(collections, false);
+  }
+  private receiveContacts(contacts: Parameters<typeof normalizeContacts>[0]) {
+    try {
+      const names = normalizeContacts(contacts ?? []);
+      if (names.length) this.events.contacts(names);
+    } catch {
+      this.events.error("Could not store contact names");
     }
   }
   async disconnect() {

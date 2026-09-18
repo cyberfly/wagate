@@ -54,8 +54,8 @@ export function Settings({
         <span className="eyebrow">BRING YOUR OWN KEY</span>
         <h2>AI that works with you</h2>
         <p className="muted">
-          Connect OpenRouter to draft replies. Copilot stays off until you
-          enable it in a conversation.
+          Connect OpenRouter for chat reply drafts and scheduled group posts.
+          Choose each group’s topics and posting mode in Group automation.
         </p>
         <label htmlFor="apiKey">
           OpenRouter API key{" "}
@@ -159,8 +159,9 @@ export function Settings({
           when Copilot runs.
         </p>
         <div className="privacy-note">
-          Autopilot is not part of this release. No AI reply is sent without
-          your approval.
+          Chat reply drafts always require approval. Group automation can post
+          automatically when you enable that mode for a group. Its topic
+          instructions are separate from Copilot’s reply instructions.
         </div>
       </aside>
     </div>

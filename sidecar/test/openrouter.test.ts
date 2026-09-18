@@ -31,3 +31,60 @@ test("OpenRouter validates empty responses and sends only a bounded completion r
   expect(body.max_tokens).toBe(1000);
   expect(body.tools).toBeUndefined();
 });
+test("news generation uses bounded web search and includes returned source citations", async () => {
+  let body: Record<string, unknown> = {};
+  const ai = new OpenRouterProvider(
+    async () => "secret",
+    async (_url, init) => {
+      body = JSON.parse(String(init.body));
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: "A current update",
+              annotations: [
+                {
+                  type: "url_citation",
+                  url_citation: { url: "https://example.com/news" },
+                },
+                {
+                  type: "url_citation",
+                  url_citation: { url: "javascript:alert(1)" },
+                },
+              ],
+            },
+          },
+        ],
+      });
+    },
+  );
+  expect(await ai.generate({ ...request, webSearch: true })).toBe(
+    "A current update\n\nSources:\nhttps://example.com/news",
+  );
+  expect(body.webSearch).toBeUndefined();
+  const tools = body.tools as {
+    type: string;
+    parameters: { max_results: number; max_uses: number };
+  }[];
+  expect(tools[0].type).toBe("openrouter:web_search");
+  expect(tools[0].parameters.max_results).toBe(3);
+  expect(tools[0].parameters.max_uses).toBe(1);
+});
+test("news never falls back to uncited model knowledge when web search returns no sources", async () => {
+  const ai = new OpenRouterProvider(
+    async () => "secret",
+    async () =>
+      Response.json({
+        choices: [
+          {
+            message: {
+              content: "Unverified news with https://invented.example/story",
+            },
+          },
+        ],
+      }),
+  );
+  await expect(ai.generate({ ...request, webSearch: true })).rejects.toThrow(
+    "no verified sources",
+  );
+});

@@ -1,5 +1,20 @@
 import { test, expect } from "bun:test";
 import { setup, incoming, chatId } from "./helpers";
+test("inbox pins require desktop access and validate chat and boolean input", async () => {
+  const s = setup();
+  s.sender.receive(incoming(), false);
+  const path = "/internal/chats/" + encodeURIComponent(chatId) + "/pin";
+  expect((await s.call(path, "PUT", { pinned: true })).status).toBe(200);
+  expect(s.chats.get(chatId)!.pinned).toBe(true);
+  expect((await (await s.call("/internal/snapshot")).json()).chats[0].pinned).toBe(true);
+  expect((await s.call(path, "PUT", { pinned: "yes" })).status).toBe(400);
+  expect((await s.call("/internal/chats/60199999999%40s.whatsapp.net/pin", "PUT", { pinned: true })).status).toBe(404);
+  const key = s.keys.create("read", ["chats.read"]);
+  expect((await s.call(path, "PUT", { pinned: false }, key.key)).status).toBe(403);
+  expect((await s.call(path, "PUT", { pinned: false })).status).toBe(200);
+  expect(s.chats.get(chatId)!.pinned).toBe(false);
+  s.close();
+});
 test("health is minimal; all data routes require authentication and reject browser origins", async () => {
   const s = setup();
   expect((await s.app.request("/health")).status).toBe(200);

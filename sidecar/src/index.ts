@@ -15,6 +15,12 @@ import { createApi } from "./api/server";
 import { OpenRouterProvider } from "./ai/openrouter";
 import { DraftRepository } from "./ai/draft-repository";
 import { CopilotService } from "./ai/copilot-service";
+import { TunnelService } from "./tunnel/tunnel-service";
+import { BroadcastRepository } from "./broadcast/broadcast-repository";
+import { BroadcastService } from "./broadcast/broadcast-service";
+import { ContactRepository } from "./contacts/contact-repository";
+import { AutomationRepository } from "./automation/automation-repository";
+import { AutomationService } from "./automation/automation-service";
 process.umask(0o077);
 const port = Number(process.env.WAGATE_PORT || 8787);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
@@ -33,18 +39,28 @@ const events = new EventBus(),
   messages = new MessageRepository(db, chats),
   settings = new Settings(db),
   keys = new ApiKeys(db),
-  drafts = new DraftRepository(db);
+  drafts = new DraftRepository(db),
+  contacts = new ContactRepository(db);
 const vault = createVaultLoader(() => Vault.open(db, dataDir));
 const provider = new BaileysProvider(vault, {
   connection: (state) => {
     events.publish("messaging.connection", state);
     log("info", "whatsapp.state", { state: state.status });
+    if (state.status === "connected") resyncAccountStateOnce();
   },
   message: (message, live) => sender.receive(message, live),
-  chat: (chat) => {
-    chats.upsert(chat);
-    events.publish("chat.updated", { id: chat.id });
+  receipt: (receipt) => {
+    if (receipt.status === "failed")
+      log("error", "whatsapp.message.rejected", {
+        code: receipt.error ?? "none",
+      });
+    broadcasts.receipt(receipt);
+    automations.receipt(receipt);
   },
+  chat: (chat) => {
+    if (chats.apply(chat)) events.publish("chat.updated", { id: chat.id });
+  },
+  contacts: (names) => contacts.save(names),
   error: () => {
     log("error", "whatsapp.operation.failed");
     events.publish("messaging.error", {
@@ -52,6 +68,31 @@ const provider = new BaileysProvider(vault, {
     });
   },
 });
+// Account state synced before Wagate stored it (saved contact names; pins and
+// archives, which order the inbox) needs one fresh copy from WhatsApp. Fetch
+// what is missing once, after the connection settles; a failure leaves the
+// flags unset so the next connection tries again.
+const accountState = [
+  { flag: "contacts.resynced", collection: "critical_unblock_low" },
+  { flag: "chats.resynced", collection: "regular_low" },
+] as const;
+let accountResync: ReturnType<typeof setTimeout> | undefined;
+function resyncAccountStateOnce() {
+  const missing = accountState.filter((s) => settings.get(s.flag) !== "true");
+  if (accountResync || !missing.length) return;
+  accountResync = setTimeout(() => {
+    provider
+      .resyncAccountState(missing.map((s) => s.collection))
+      .then(() => {
+        for (const s of missing) settings.set(s.flag, "true");
+        log("info", "whatsapp.account_state.resynced", {
+          collections: missing.map((s) => s.collection).join(","),
+        });
+      })
+      .catch(() => log("error", "whatsapp.account_state.resync_failed"))
+      .finally(() => (accountResync = undefined));
+  }, 10000);
+}
 const sender = new MessageService(provider, messages, events);
 const ai = new OpenRouterProvider(async () =>
   (await vault()).get("openrouter"),
@@ -65,9 +106,32 @@ const copilot = new CopilotService(
   settings,
   events,
 );
+const broadcasts = new BroadcastService(
+  new BroadcastRepository(db),
+  sender,
+  provider,
+  events,
+);
+const automations = new AutomationService(
+  new AutomationRepository(db),
+  ai,
+  provider,
+  sender,
+  chats,
+  settings,
+  events,
+);
 const desktopToken = process.env.WAGATE_DESKTOP_TOKEN || "";
 delete process.env.WAGATE_DESKTOP_TOKEN;
-const app = createApi({
+const databaseHealthy = () => {
+  try {
+    db.query("SELECT 1").get();
+    return true;
+  } catch {
+    return false;
+  }
+};
+const services = {
   provider,
   keys,
   chats,
@@ -78,18 +142,26 @@ const app = createApi({
   vault,
   drafts,
   copilot,
-  desktopToken,
+  broadcasts,
+  automations,
   port,
-  databaseHealthy: () => {
-    try {
-      db.query("SELECT 1").get();
-      return true;
-    } catch {
-      return false;
-    }
-  },
+  databaseHealthy,
   log,
+};
+// The tunnel serves this second app, which carries the public routes only, on
+// its own ephemeral loopback port. `/internal` never leaves the machine.
+const publicApp = createApi({
+  ...services,
+  desktopToken: "",
+  publicMode: true,
 });
+const tunnel = new TunnelService({
+  dataDir,
+  events,
+  log,
+  fetch: publicApp.fetch,
+});
+const app = createApi({ ...services, desktopToken, tunnel });
 let server: ReturnType<typeof Bun.serve>;
 try {
   server = Bun.serve({
@@ -104,17 +176,24 @@ try {
   process.exit(1);
 }
 log("info", "sidecar.started", { port });
+automations.start();
 let stopping = false;
 const shutdown = async () => {
   if (stopping) return;
   stopping = true;
+  clearTimeout(accountResync);
   copilot.close();
+  broadcasts.close();
+  automations.close();
+  tunnel.close();
   server.stop(true);
   await provider.disconnect();
   db.close();
   log("info", "sidecar.stopped");
   process.exit(0);
 };
+// Last resort: never leave a public tunnel running after the gateway is gone.
+process.on("exit", () => tunnel.close());
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
 if (process.env.WAGATE_DESKTOP === "1") {

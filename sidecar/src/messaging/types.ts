@@ -18,6 +18,33 @@ export interface Chat {
   type: "direct" | "group";
   lastMessageAt: number | null;
   aiMode: "off" | "copilot";
+  pinned: boolean;
+  archived: boolean;
+  lastMessage?: string | null;
+}
+export interface GroupInfo {
+  id: string;
+  name: string;
+  memberCount: number;
+  isAdmin: boolean;
+}
+/** What WhatsApp reports about a chat. Missing fields leave stored ones alone. */
+export interface ChatUpdate {
+  id: string;
+  type: Chat["type"];
+  name?: string;
+  lastMessageAt?: number;
+  /** When the chat was pinned, or null once unpinned. */
+  pinnedAt?: number | null;
+  archived?: boolean;
+}
+/** Names WhatsApp knows for one person. Missing fields leave stored ones alone. */
+export interface ContactNames {
+  id: string;
+  /** Saved in your phone's contacts. */
+  name?: string;
+  /** Set by the contact on their own WhatsApp profile. */
+  pushName?: string;
 }
 export interface Message {
   id: string;
@@ -30,6 +57,16 @@ export interface Message {
   text?: string;
   timestamp: number;
 }
+/**
+ * What WhatsApp said about one of our messages after it left the socket.
+ * A send only means the message was written; WhatsApp can still reject it.
+ */
+export interface MessageReceipt {
+  providerMessageId: string;
+  status: "failed" | "delivered" | "read";
+  /** WhatsApp's error code for a rejection, such as "463". */
+  error?: string;
+}
 export interface Draft {
   id: string;
   chatId: string;
@@ -37,6 +74,67 @@ export interface Draft {
   text: string;
   status: "pending" | "sending" | "sent" | "dismissed" | "uncertain";
   createdAt: number;
+}
+export interface Broadcast {
+  id: string;
+  name: string;
+  status: "running" | "paused" | "completed" | "cancelled";
+  /** Seconds between sends: a random gap in [minDelay, maxDelay]. */
+  minDelay: number;
+  maxDelay: number;
+  /** Why the broadcast paused, when it paused on its own. */
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  total: number;
+  /** Accepted by WhatsApp, including those since delivered or read. */
+  sent: number;
+  /** Reached the recipient's phone, including those since read. */
+  delivered: number;
+  /** Rejected by WhatsApp after the send. */
+  failed: number;
+  pending: number;
+  uncertain: number;
+  cancelled: number;
+}
+export interface BroadcastRecipient {
+  position: number;
+  chatId: string;
+  label: string;
+  text: string;
+  status:
+    | "pending"
+    | "sending"
+    | "sent"
+    | "delivered"
+    | "read"
+    | "failed"
+    | "uncertain"
+    | "cancelled";
+  messageId: string | null;
+  error: string | null;
+  /** When the send began; the only time known for an uncertain send. */
+  attemptedAt: number | null;
+  sentAt: number | null;
+}
+export interface BroadcastEvent {
+  id: number;
+  at: number;
+  type:
+    | "created"
+    | "sent"
+    | "failed"
+    | "uncertain"
+    | "paused"
+    | "resumed"
+    | "cancelled"
+    | "completed";
+  /** The recipient a send outcome refers to. */
+  position: number | null;
+  label: string | null;
+  chatId: string | null;
+  /** Counts, a pause reason, or a failure reason, ready to show. */
+  detail: string | null;
 }
 export interface MessagePage {
   messages: Message[];

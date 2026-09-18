@@ -1,5 +1,20 @@
 // Development-only fixture. Dynamically imported only in Vite preview mode.
-import type { Snapshot, Message, Draft, Chat } from "./api";
+import {
+  automationPreviewRequest,
+  previewAutomations,
+  previewAutomationPosts,
+  previewGroups,
+} from "./automation-preview";
+import type {
+  Snapshot,
+  Message,
+  Draft,
+  Chat,
+  TunnelState,
+  Broadcast,
+  BroadcastEvent,
+  BroadcastRecipient,
+} from "./api";
 const now = Date.now();
 const chats: Chat[] = [
   {
@@ -9,6 +24,8 @@ const chats: Chat[] = [
     type: "direct",
     lastMessageAt: now,
     aiMode: "copilot",
+    pinned: false,
+    archived: false,
   },
   {
     id: "60222222222@s.whatsapp.net",
@@ -17,6 +34,8 @@ const chats: Chat[] = [
     type: "direct",
     lastMessageAt: now - 3600000,
     aiMode: "off",
+    pinned: true,
+    archived: false,
   },
   {
     id: "60333333333@s.whatsapp.net",
@@ -25,15 +44,35 @@ const chats: Chat[] = [
     type: "direct",
     lastMessageAt: now - 7200000,
     aiMode: "off",
+    pinned: false,
+    archived: false,
+  },
+  {
+    id: "60444444444@s.whatsapp.net",
+    provider: "whatsapp",
+    name: "Old supplier",
+    type: "direct",
+    lastMessageAt: now - 86400000 * 30,
+    aiMode: "off",
+    pinned: false,
+    archived: true,
   },
 ];
+// Mirrors the sidecar's order: pinned first, then by activity, archived last.
+chats.sort(
+  (a, b) =>
+    Number(a.archived) - Number(b.archived) ||
+    Number(b.pinned) - Number(a.pinned) ||
+    (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0),
+);
+const ali = chats.find((c) => c.name === "Ali Rahman")!;
 const messages: Message[] = [
   {
     id: "sample-1",
     provider: "whatsapp",
     providerMessageId: "sample-1",
-    chatId: chats[0].id,
-    senderId: chats[0].id,
+    chatId: ali.id,
+    senderId: ali.id,
     direction: "incoming",
     type: "text",
     text: "Hey! Do you have time to go over the proposal tomorrow?",
@@ -43,7 +82,7 @@ const messages: Message[] = [
     id: "sample-2",
     provider: "whatsapp",
     providerMessageId: "sample-2",
-    chatId: chats[0].id,
+    chatId: ali.id,
     senderId: "me",
     direction: "outgoing",
     type: "text",
@@ -54,8 +93,8 @@ const messages: Message[] = [
     id: "sample-3",
     provider: "whatsapp",
     providerMessageId: "sample-3",
-    chatId: chats[0].id,
-    senderId: chats[0].id,
+    chatId: ali.id,
+    senderId: ali.id,
     direction: "incoming",
     type: "text",
     text: "Great. Would 2 pm work for you?",
@@ -65,7 +104,7 @@ const messages: Message[] = [
 const drafts: Draft[] = [
   {
     id: "sample-draft",
-    chatId: chats[0].id,
+    chatId: ali.id,
     sourceMessageId: "sample-3",
     text: "2 pm works for me. I’ll have the proposal ready for us to review. See you then!",
     status: "pending",
@@ -84,7 +123,7 @@ let config = {
     contextSize: 20,
     guardEnabled: true,
   },
-  hasKey: false,
+  hasKey: true,
   port: 8787,
 };
 const keys: {
@@ -95,6 +134,148 @@ const keys: {
   lastUsedAt: null;
   revokedAt: number | null;
 }[] = [];
+let tunnel: TunnelState = {
+  status: "off",
+  url: null,
+  error: null,
+  installed: true,
+  supported: true,
+  progress: null,
+};
+const broadcasts: {
+  broadcast: Omit<
+    Broadcast,
+    | "total"
+    | "sent"
+    | "delivered"
+    | "failed"
+    | "pending"
+    | "uncertain"
+    | "cancelled"
+  >;
+  recipients: BroadcastRecipient[];
+  events: BroadcastEvent[];
+}[] = [];
+let eventId = 0;
+function summary({ broadcast, recipients }: (typeof broadcasts)[number]) {
+  const count = (...s: string[]) =>
+    recipients.filter((r) => s.includes(r.status)).length;
+  return {
+    ...broadcast,
+    total: recipients.length,
+    sent: count("sent", "delivered", "read"),
+    delivered: count("delivered", "read"),
+    failed: count("failed"),
+    pending: count("pending", "sending"),
+    uncertain: count("uncertain"),
+    cancelled: count("cancelled"),
+  };
+}
+function record(
+  entry: (typeof broadcasts)[number],
+  type: BroadcastEvent["type"],
+  detail: string | null = null,
+  recipient?: BroadcastRecipient,
+) {
+  entry.events.push({
+    id: ++eventId,
+    at: Date.now(),
+    type,
+    position: recipient?.position ?? null,
+    label: recipient?.label ?? null,
+    chatId: recipient?.chatId ?? null,
+    detail,
+  });
+  entry.broadcast.updatedAt = Date.now();
+}
+// Sends one recipient per UI poll instead of waiting for real pacing.
+function advanceBroadcast() {
+  const b = broadcasts.find((x) => x.broadcast.status === "running");
+  if (!b) return;
+  const next = b.recipients.find((r) => r.status === "pending");
+  if (next) {
+    next.status = "sent";
+    next.attemptedAt = Date.now() - 400;
+    next.sentAt = Date.now();
+    next.messageId = crypto.randomUUID();
+    record(b, "sent", null, next);
+  } else {
+    b.broadcast.status = "completed";
+    record(b, "completed", `${summary(b).sent} sent`);
+  }
+}
+function broadcastRequest(
+  path: string,
+  method: string,
+  data: Record<string, unknown> | undefined,
+) {
+  if (path === "/internal/broadcasts" && method === "POST") {
+    const now = Date.now();
+    const recipients = data?.recipients as {
+      to: string;
+      label: string;
+      text: string;
+    }[];
+    const entry = {
+      broadcast: {
+        id: crypto.randomUUID(),
+        name: String(data?.name),
+        status: "running" as Broadcast["status"],
+        minDelay: Number(data?.minDelay),
+        maxDelay: Number(data?.maxDelay),
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      recipients: recipients.map((r, i): BroadcastRecipient => ({
+        position: i + 1,
+        chatId: r.to + "@s.whatsapp.net",
+        label: r.label || r.to,
+        text: r.text,
+        status: "pending",
+        messageId: null,
+        error: null,
+        attemptedAt: null,
+        sentAt: null,
+      })),
+      events: [],
+    };
+    broadcasts.unshift(entry);
+    record(entry, "created", `${recipients.length} recipients`);
+    return summary(entry);
+  }
+  const [, , , id, action] = path.split("/");
+  const entry = broadcasts.find((b) => b.broadcast.id === id);
+  if (!entry) throw new Error("Broadcast not found");
+  const b = entry.broadcast;
+  if (method === "DELETE") broadcasts.splice(broadcasts.indexOf(entry), 1);
+  else if (action === "export")
+    return {
+      path: `~/Downloads/${b.name}-send-log.csv (preview: nothing saved)`,
+    };
+  else if (action === "pause") {
+    b.status = "paused";
+    record(entry, "paused");
+  } else if (action === "resume") {
+    b.status = "running";
+    record(entry, "resumed");
+  } else if (action === "cancel") {
+    b.status = "cancelled";
+    let skipped = 0;
+    for (const r of entry.recipients)
+      if (r.status === "pending") {
+        r.status = "cancelled";
+        skipped++;
+      }
+    record(entry, "cancelled", `${skipped} not sent`);
+  } else
+    return {
+      broadcast: summary(entry),
+      recipients: entry.recipients,
+      events: entry.events,
+    };
+  return summary(entry);
+}
 export async function previewRequest(
   path: string,
   method: string,
@@ -102,7 +283,49 @@ export async function previewRequest(
 ): Promise<unknown> {
   const url = new URL(path, "http://preview.local");
   const data = body as Record<string, unknown> | undefined;
+  if (
+    url.pathname === "/internal/groups" ||
+    url.pathname.startsWith("/internal/automations/") ||
+    url.pathname.startsWith("/internal/automation-posts/")
+  )
+    return automationPreviewRequest(
+      url.pathname,
+      method,
+      data,
+      (chatId, text) => {
+        const now = Date.now(),
+          id = crypto.randomUUID();
+        messages.push({
+          id,
+          provider: "whatsapp",
+          providerMessageId: id,
+          chatId,
+          senderId: "me",
+          direction: "outgoing",
+          type: "text",
+          text,
+          timestamp: now,
+        });
+        const existing = chats.find((c) => c.id === chatId);
+        if (existing) existing.lastMessageAt = now;
+        else
+          chats.unshift({
+            id: chatId,
+            provider: "whatsapp",
+            name: previewGroups.find((g) => g.id === chatId)?.name || chatId,
+            type: "group",
+            lastMessageAt: now,
+            aiMode: "off",
+            pinned: false,
+            archived: false,
+          });
+        return { success: true, messageId: id };
+      },
+    );
+  if (url.pathname.startsWith("/internal/broadcasts"))
+    return broadcastRequest(url.pathname, method, data);
   if (url.pathname === "/internal/snapshot") {
+    advanceBroadcast();
     const id = url.searchParams.get("chatId");
     return {
       health: {
@@ -112,12 +335,40 @@ export async function previewRequest(
         ai: config.hasKey ? "configured" : "not_configured",
       },
       connection,
-      chats: [...chats],
+      chats: [...chats]
+        .sort(
+          (a, b) =>
+            Number(a.archived) - Number(b.archived) ||
+            Number(b.pinned) - Number(a.pinned) ||
+            (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0),
+        )
+        .map((c) => ({
+          ...c,
+          lastMessage: messages.filter((m) => m.chatId === c.id).at(-1)?.text,
+        })),
       messages: messages.filter((m) => m.chatId === id),
       drafts: drafts.filter((d) => d.chatId === id && d.status === "pending"),
       processing: [],
+      tunnel,
+      broadcasts: broadcasts.map(summary),
+      automations: previewAutomations.map((c) => ({ ...c })),
+      automationPosts: previewAutomationPosts.map((p) => ({ ...p })),
       alerts: [],
     } satisfies Snapshot;
+  }
+  if (url.pathname.startsWith("/internal/tunnel")) {
+    if (path === "/internal/tunnel/start")
+      tunnel = {
+        ...tunnel,
+        status: "online",
+        url: "https://sample-preview-gateway.trycloudflare.com",
+        error: null,
+      };
+    if (path === "/internal/tunnel/stop")
+      tunnel = { ...tunnel, status: "off", url: null, error: null };
+    if (path === "/internal/tunnel/install")
+      tunnel = { ...tunnel, installed: true };
+    return { ...tunnel };
   }
   if (path === "/internal/settings") {
     if (method === "PUT") {
@@ -163,6 +414,14 @@ export async function previewRequest(
       status: path.endsWith("/connect") ? "connected" : "disconnected",
     };
     return connection;
+  }
+  if (path.endsWith("/pin")) {
+    const chat = chats.find(
+      (c) => c.id === decodeURIComponent(path.split("/")[3]),
+    );
+    if (!chat) throw new Error("Chat not found");
+    chat.pinned = data?.pinned === true;
+    return { ...chat };
   }
   if (path.endsWith("/mode")) {
     const chat = chats.find(

@@ -1,9 +1,111 @@
 import {
   normalizeMessageContent,
   jidNormalizedUser,
+  WAMessageStatus,
+  type Contact,
   type WAMessage,
+  type WAMessageUpdate,
 } from "@whiskeysockets/baileys";
-import type { Message } from "../types";
+import type {
+  ChatUpdate,
+  ContactNames,
+  Message,
+  MessageReceipt,
+} from "../types";
+/** Protobuf Longs, numbers and numeric strings; 0 and junk become undefined. */
+function number(value: unknown) {
+  const n =
+    value && typeof value === "object" && "toNumber" in value
+      ? (value as { toNumber(): number }).toNumber()
+      : Number(value);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+/** WhatsApp mixes seconds and milliseconds; anything before 2001 in ms was seconds. */
+const millis = (value: unknown) => {
+  const n = number(value);
+  return n === undefined ? undefined : n < 1e12 ? n * 1000 : n;
+};
+/**
+ * A chat from history sync, chats.upsert or chats.update. History entries may
+ * carry only lastMsgTimestamp; account-sync updates carry just the pin or
+ * archive flag, which only apply to chats already known.
+ */
+export function normalizeChat(chat: {
+  id?: string | null;
+  name?: string | null;
+  conversationTimestamp?: unknown;
+  lastMsgTimestamp?: unknown;
+  lastMessageRecvTimestamp?: unknown;
+  pinned?: unknown;
+  archived?: boolean | null;
+}): ChatUpdate | null {
+  if (!chat.id || !/@(s\.whatsapp\.net|lid|g\.us)$/.test(chat.id)) return null;
+  const times = [
+    chat.conversationTimestamp,
+    chat.lastMsgTimestamp,
+    chat.lastMessageRecvTimestamp,
+  ]
+    .map(millis)
+    .filter((t): t is number => t !== undefined);
+  const update: ChatUpdate = {
+    id: jidNormalizedUser(chat.id),
+    type: chat.id.endsWith("@g.us") ? "group" : "direct",
+  };
+  if (chat.name) update.name = chat.name;
+  if (times.length) update.lastMessageAt = Math.max(...times);
+  if (chat.pinned !== undefined) update.pinnedAt = millis(chat.pinned) ?? null;
+  if (typeof chat.archived === "boolean") update.archived = chat.archived;
+  return update;
+}
+/**
+ * Our message's fate after it left the socket: a rejection in the server's
+ * ack (Baileys reports it as status ERROR), then delivery and read receipts.
+ * The chat id is left out on purpose: WhatsApp may answer from the
+ * recipient's LID for a message addressed to their phone number.
+ */
+export function normalizeReceipt({
+  key,
+  update,
+}: WAMessageUpdate): MessageReceipt | null {
+  if (!key.fromMe || !key.id) return null;
+  switch (update.status) {
+    case WAMessageStatus.ERROR: {
+      const code = update.messageStubParameters?.[0];
+      return {
+        providerMessageId: key.id,
+        status: "failed",
+        ...(code ? { error: String(code) } : {}),
+      };
+    }
+    case WAMessageStatus.DELIVERY_ACK:
+      return { providerMessageId: key.id, status: "delivered" };
+    case WAMessageStatus.READ:
+    case WAMessageStatus.PLAYED:
+      return { providerMessageId: key.id, status: "read" };
+    default:
+      return null;
+  }
+}
+/**
+ * Names from contact sync and message push names. A person can be known by a
+ * phone-number id and a LID; the names are stored under both so either chat
+ * id finds them.
+ */
+export function normalizeContacts(contacts: Partial<Contact>[]): ContactNames[] {
+  const result: ContactNames[] = [];
+  for (const c of contacts) {
+    const name = c.name?.trim() || undefined,
+      pushName = (c.notify || c.verifiedName)?.trim() || undefined;
+    if (!name && !pushName) continue;
+    const ids = new Set(
+      [c.id, c.lid, c.phoneNumber]
+        .filter((id): id is string => !!id && /@(s\.whatsapp\.net|lid)$/.test(id))
+        .map((id) => jidNormalizedUser(id)),
+    );
+    for (const id of ids) result.push({ id, name, pushName });
+  }
+  return result;
+}
 export function normalizeMessage(
   raw: WAMessage,
   selfId?: string,

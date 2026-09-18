@@ -9,9 +9,19 @@ import { Vault } from "../src/security/vault";
 import { DraftRepository } from "../src/ai/draft-repository";
 import { CopilotService } from "../src/ai/copilot-service";
 import { createApi } from "../src/api/server";
+import { TunnelService } from "../src/tunnel/tunnel-service";
+import { BroadcastRepository } from "../src/broadcast/broadcast-repository";
+import { BroadcastService } from "../src/broadcast/broadcast-service";
+import { ContactRepository } from "../src/contacts/contact-repository";
+import { AutomationRepository } from "../src/automation/automation-repository";
+import { AutomationService } from "../src/automation/automation-service";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
-import type { Message, ConnectionState } from "../src/messaging/types";
+import type {
+  Message,
+  ConnectionState,
+  GroupInfo,
+} from "../src/messaging/types";
 export const chatId = "60123456789@s.whatsapp.net";
 export function incoming(
   id = "one",
@@ -32,6 +42,24 @@ export function incoming(
 export class FakeProvider implements MessagingProvider {
   state: ConnectionState = { status: "connected" };
   sent: Message[] = [];
+  groups: GroupInfo[] = [
+    {
+      id: "120363000000000001@g.us",
+      name: "AI community",
+      memberCount: 20,
+      isAdmin: true,
+    },
+  ];
+  async listGroups() {
+    if (this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    return this.groups.map((g) => ({ ...g }));
+  }
+  async getGroup(id: string) {
+    const group = (await this.listGroups()).find((g) => g.id === id);
+    if (!group) throw new Error("Automation group is unavailable");
+    return group;
+  }
   async connect() {
     this.state = { status: "connected" };
   }
@@ -45,8 +73,15 @@ export class FakeProvider implements MessagingProvider {
     return this.state;
   }
   async sendText(chatId: string, text: string) {
-    const id = crypto.randomUUID();
-    const m: Message = { ...incoming(id), chatId, text, direction: "outgoing" };
+    const id = crypto.randomUUID().replace(/-/g, "").toUpperCase();
+    // Ids take the Baileys provider's shape, so receipts can find them.
+    const m: Message = {
+      ...incoming(`whatsapp:${chatId}:${id}`),
+      providerMessageId: id,
+      chatId,
+      text,
+      direction: "outgoing",
+    };
     this.sent.push(m);
     return m;
   }
@@ -77,7 +112,31 @@ export function setup(ai?: AIProvider) {
     settings,
     events,
   );
-  const app = createApi({
+  const contacts = new ContactRepository(db);
+  // No pacing in tests: the next send is scheduled on the next timer tick.
+  const broadcasts = new BroadcastService(
+    new BroadcastRepository(db),
+    sender,
+    provider,
+    events,
+    () => 0,
+  );
+  const automationRepository = new AutomationRepository(db);
+  const automations = new AutomationService(
+    automationRepository,
+    ai || {
+      generate: async (request) => {
+        requests.push(request);
+        return "A useful community tip.";
+      },
+    },
+    provider,
+    sender,
+    chats,
+    settings,
+    events,
+  );
+  const services = {
     provider,
     keys,
     chats,
@@ -88,10 +147,27 @@ export function setup(ai?: AIProvider) {
     vault: async () => vault,
     drafts,
     copilot,
-    desktopToken: "test-desktop-token",
+    broadcasts,
+    automations,
     port: 8787,
     databaseHealthy: () => true,
     log: () => {},
+  };
+  const publicApp = createApi({
+    ...services,
+    desktopToken: "",
+    publicMode: true,
+  });
+  const tunnel = new TunnelService({
+    dataDir: "/nonexistent",
+    events,
+    log: () => {},
+    fetch: publicApp.fetch,
+  });
+  const app = createApi({
+    ...services,
+    desktopToken: "test-desktop-token",
+    tunnel,
   });
   const call = (
     path: string,
@@ -121,11 +197,20 @@ export function setup(ai?: AIProvider) {
     vault,
     sender,
     copilot,
+    broadcasts,
+    automations,
+    automationRepository,
+    contacts,
     requests,
     app,
+    publicApp,
+    tunnel,
     call,
     close: () => {
       copilot.close();
+      broadcasts.close();
+      automations.close();
+      tunnel.close();
       db.close();
     },
   };

@@ -40,6 +40,7 @@ test("message deduplication, stable pagination and chat metadata survive reopen"
     lastMessageAt: 10,
   });
   chats.setMode(m.chatId, "copilot");
+  chats.setPinned(m.chatId, true);
   messages.save({ ...m, id: "b", providerMessageId: "p2" });
   messages.save({ ...m, id: "c", providerMessageId: "p3", timestamp: 1 });
   db.close();
@@ -50,7 +51,10 @@ test("message deduplication, stable pagination and chat metadata survive reopen"
     name: "Ali",
     lastMessageAt: 10,
     aiMode: "copilot",
+    pinned: true,
   });
+  chats.apply({ id: m.chatId, type: "direct", pinnedAt: null });
+  expect(chats.get(m.chatId)!.pinned).toBe(true);
   const page = messages.page(m.chatId, 1);
   expect(page.messages[0].id).toBe("b");
   expect(messages.page(m.chatId, 1, page.nextCursor!).messages[0].id).toBe("a");
