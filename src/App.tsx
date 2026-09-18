@@ -48,6 +48,7 @@ const pages = {
 export default function App() {
   const [page, setPage] = useState<keyof typeof pages>("inbox"),
     [selected, setSelected] = useState<string | null>(null),
+    [sidebarMinimized, setSidebarMinimized] = useState(false),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
   const { snapshot, error, refresh } = useGateway(selected);
@@ -76,7 +77,8 @@ export default function App() {
           ? "inbox-shell"
           : page === "automation"
             ? "automation-shell"
-            : "")
+            : "") +
+        (sidebarMinimized ? " sidebar-minimized" : "")
       }
     >
       <aside className="sidebar">
@@ -86,12 +88,23 @@ export default function App() {
             wagate<span>YOUR LOCAL GATEWAY</span>
           </div>
         </div>
+        <button
+          className="sidebar-toggle"
+          type="button"
+          aria-label={
+            sidebarMinimized ? "Expand sidebar" : "Collapse sidebar"
+          }
+          aria-expanded={!sidebarMinimized}
+          title={sidebarMinimized ? "Expand sidebar" : "Collapse sidebar"}
+          onClick={() => setSidebarMinimized((minimized) => !minimized)}
+        >
+          <span aria-hidden="true">{sidebarMinimized ? "›" : "‹"}</span>
+        </button>
         <div className="workspace-label">WORKSPACE</div>
         <nav>
           {Object.entries(pages).map(([key, item]) => (
             <button
               className={page === key ? "active" : ""}
-              title={item.label}
               aria-label={item.label}
               aria-current={page === key ? "page" : undefined}
               key={key}
@@ -107,6 +120,9 @@ export default function App() {
                   {sending.total - sending.pending}/{sending.total}
                 </small>
               ) : null}
+              <span className="sidebar-tooltip" role="tooltip">
+                {item.label}
+              </span>
             </button>
           ))}
         </nav>
