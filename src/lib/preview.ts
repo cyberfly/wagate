@@ -14,6 +14,7 @@ import type {
   Broadcast,
   BroadcastEvent,
   BroadcastRecipient,
+  GroupImport,
 } from "./api";
 const now = Date.now();
 const chats: Chat[] = [
@@ -276,6 +277,60 @@ function broadcastRequest(
     };
   return summary(entry);
 }
+const groupImports: GroupImport[] = [];
+/** Adds one batch of five per poll; some people need an invite or are already in. */
+function advanceGroupImport() {
+  const job = groupImports.find((j) => j.status === "running");
+  if (!job) return;
+  const batch = job.members.filter((m) => m.status === "pending").slice(0, 5);
+  for (const m of batch) {
+    const n = job.members.indexOf(m) + 1;
+    if (n % 7 === 0) {
+      m.status = "invite";
+      m.error = "Their privacy settings need an invite link";
+    } else m.status = n % 11 === 0 ? "already" : "added";
+  }
+  if (!job.members.some((m) => m.status === "pending")) job.status = "completed";
+  job.updatedAt = Date.now();
+}
+function groupImportRequest(path: string, method: string, data?: Record<string, unknown>) {
+  const [, , , id, action] = path.split("/");
+  if (!id && method === "POST") {
+    if (groupImports.some((j) => j.status === "running"))
+      throw new Error("Group import is already running. Wait for it or cancel it first.");
+    const group = previewGroups.find((g) => g.id === data?.groupId);
+    if (!group?.isAdmin)
+      throw new Error("Group import needs you to be an admin of this group on WhatsApp");
+    const job: GroupImport = {
+      id: crypto.randomUUID(),
+      groupId: group.id,
+      groupName: group.name,
+      status: "running",
+      minDelay: Number(data?.minDelay),
+      maxDelay: Number(data?.maxDelay),
+      error: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      members: (data?.members as { phone: string; label: string }[]).map((m) => ({
+        phone: m.phone,
+        label: m.label || m.phone,
+        status: "pending",
+        error: null,
+      })),
+    };
+    groupImports.unshift(job);
+    return job;
+  }
+  const job = groupImports.find((j) => j.id === id);
+  if (!job) throw new Error("Group import not found");
+  if (action === "cancel") {
+    job.status = "cancelled";
+    for (const m of job.members) if (m.status === "pending") m.status = "cancelled";
+    return job;
+  }
+  groupImports.splice(groupImports.indexOf(job), 1);
+  return { success: true };
+}
 export async function previewRequest(
   path: string,
   method: string,
@@ -324,8 +379,11 @@ export async function previewRequest(
     );
   if (url.pathname.startsWith("/internal/broadcasts"))
     return broadcastRequest(url.pathname, method, data);
+  if (url.pathname.startsWith("/internal/group-imports"))
+    return groupImportRequest(url.pathname, method, data);
   if (url.pathname === "/internal/snapshot") {
     advanceBroadcast();
+    advanceGroupImport();
     const id = url.searchParams.get("chatId");
     return {
       health: {
@@ -353,6 +411,10 @@ export async function previewRequest(
       broadcasts: broadcasts.map(summary),
       automations: previewAutomations.map((c) => ({ ...c })),
       automationPosts: previewAutomationPosts.map((p) => ({ ...p })),
+      groupImports: groupImports.map((j) => ({
+        ...j,
+        members: j.members.map((m) => ({ ...m })),
+      })),
       alerts: [],
     } satisfies Snapshot;
   }

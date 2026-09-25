@@ -7,6 +7,7 @@ import { Settings } from "./components/Settings";
 import { ApiAccess } from "./components/ApiAccess";
 import { Broadcast } from "./components/Broadcast";
 import { GroupAutomation } from "./components/GroupAutomation";
+import { GroupMembers } from "./components/GroupMembers";
 const pages = {
   inbox: {
     label: "Inbox",
@@ -19,6 +20,12 @@ const pages = {
     title: "Broadcast",
     subtitle: "Reach a whole list, one personal message at a time.",
     icon: "⇉",
+  },
+  members: {
+    label: "Add to group",
+    title: "Add to group",
+    subtitle: "Bring a whole list into a group you run.",
+    icon: "⊕",
   },
   automation: {
     label: "Group automation",
@@ -69,6 +76,7 @@ export default function App() {
   );
   const connected = snapshot?.connection.status === "connected";
   const sending = snapshot?.broadcasts.find((b) => b.status === "running");
+  const adding = snapshot?.groupImports.find((i) => i.status === "running");
   return (
     <div
       className={
@@ -118,6 +126,12 @@ export default function App() {
               {key === "broadcast" && sending ? (
                 <small>
                   {sending.total - sending.pending}/{sending.total}
+                </small>
+              ) : null}
+              {key === "members" && adding ? (
+                <small>
+                  {adding.members.filter((m) => m.status !== "pending").length}/
+                  {adding.members.length}
                 </small>
               ) : null}
               <span className="sidebar-tooltip" role="tooltip">
@@ -228,6 +242,13 @@ export default function App() {
               busy={busy}
               act={act}
               openSettings={() => setPage("settings")}
+            />
+          ) : page === "members" ? (
+            <GroupMembers
+              imports={snapshot?.groupImports || []}
+              connected={connected && !error}
+              busy={busy}
+              act={act}
             />
           ) : page === "broadcast" ? (
             <Broadcast

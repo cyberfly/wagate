@@ -136,6 +136,36 @@ export interface BroadcastEvent {
   /** Counts, a pause reason, or a failure reason, ready to show. */
   detail: string | null;
 }
+/** What WhatsApp did with one number asked to join a group. */
+export interface GroupAddResult {
+  phone: string;
+  /**
+   * `invite`: the person's privacy settings only let contacts add them, so
+   * they must join through an invite instead.
+   */
+  status: "added" | "already" | "invite" | "failed";
+  error?: string;
+}
+export interface GroupImportMember {
+  phone: string;
+  label: string;
+  status: "pending" | GroupAddResult["status"] | "cancelled";
+  error: string | null;
+}
+export interface GroupImport {
+  id: string;
+  groupId: string;
+  groupName: string;
+  status: "running" | "completed" | "cancelled" | "stopped";
+  /** Seconds between requests: a random gap in [minDelay, maxDelay]. */
+  minDelay: number;
+  maxDelay: number;
+  /** Why the import stopped early. */
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  members: GroupImportMember[];
+}
 export interface MessagePage {
   messages: Message[];
   nextCursor: string | null;

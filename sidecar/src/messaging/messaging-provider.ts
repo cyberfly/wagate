@@ -5,6 +5,7 @@ import type {
   Message,
   MessageReceipt,
   GroupInfo,
+  GroupAddResult,
 } from "./types";
 export interface ProviderEvents {
   connection: (state: ConnectionState) => void;
@@ -22,5 +23,10 @@ export interface MessagingProvider {
   getConnectionState(): ConnectionState;
   listGroups(): Promise<GroupInfo[]>;
   getGroup(id: string): Promise<GroupInfo>;
+  /** Adds international phone numbers (digits only) to a group in one request. */
+  addGroupParticipants(
+    groupId: string,
+    phones: string[],
+  ): Promise<GroupAddResult[]>;
 }
 // Historical reads deliberately live in repositories: SQLite is the source of truth.

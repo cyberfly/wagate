@@ -10,7 +10,7 @@ import type { MessagingProvider, ProviderEvents } from "../messaging-provider";
 import type { ConnectionState } from "../types";
 import { Vault } from "../../security/vault";
 import { createAuth } from "./auth";
-import { groupInfo } from "./groups";
+import { addResults, groupInfo } from "./groups";
 import {
   normalizeChat,
   normalizeContacts,
@@ -46,6 +46,17 @@ export class BaileysProvider implements MessagingProvider {
     if (!socket || this.state.status !== "connected")
       throw new Error("WhatsApp is disconnected");
     return groupInfo(await socket.groupMetadata(id), socket.user);
+  }
+  async addGroupParticipants(groupId: string, phones: string[]) {
+    const socket = this.socket;
+    if (!socket || this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    const replies = await socket.groupParticipantsUpdate(
+      groupId,
+      phones.map((p) => p + "@s.whatsapp.net"),
+      "add",
+    );
+    return addResults(phones, replies);
   }
   private update(state: ConnectionState) {
     this.state = state;

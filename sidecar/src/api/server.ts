@@ -18,6 +18,7 @@ import type { CopilotService } from "../ai/copilot-service";
 import type { TunnelService } from "../tunnel/tunnel-service";
 import type { BroadcastService } from "../broadcast/broadcast-service";
 import type { AutomationService } from "../automation/automation-service";
+import type { GroupImportService } from "../groups/group-import-service";
 interface Services {
   provider: MessagingProvider;
   keys: ApiKeys;
@@ -31,6 +32,7 @@ interface Services {
   copilot: CopilotService;
   broadcasts: BroadcastService;
   automations: AutomationService;
+  groupImports: GroupImportService;
   desktopToken: string;
   port: number;
   tunnel?: TunnelService;
@@ -88,7 +90,9 @@ export function createApi(s: Services) {
     "Broadcast is too large. Split the CSV into smaller files.",
   );
   app.use("*", (c, next) =>
-    (!s.publicMode && c.req.path === "/internal/broadcasts"
+    (!s.publicMode &&
+    (c.req.path === "/internal/broadcasts" ||
+      c.req.path === "/internal/group-imports")
       ? broadcastLimit
       : standardLimit)(c, next),
   );
@@ -242,12 +246,38 @@ export function createApi(s: Services) {
         broadcasts: s.broadcasts.list(),
         automations: s.automations.list(),
         automationPosts: s.automations.posts(),
+        groupImports: s.groupImports.list(),
         alerts,
       });
     });
     app.get("/internal/groups", async (c) =>
       c.json({ groups: await s.provider.listGroups() }),
     );
+    app.post("/internal/group-imports", async (c) => {
+      const data = await body(c);
+      if (!Array.isArray(data.members)) throw new Error("Invalid members");
+      return c.json(
+        await s.groupImports.start(
+          string(data.groupId, "group", 100),
+          data.members.map((m: unknown) => {
+            if (!m || typeof m !== "object") throw new Error("Invalid members");
+            const { phone, label } = m as Record<string, unknown>;
+            return {
+              phone: string(phone, "phone number", 20),
+              label: typeof label === "string" ? label : "",
+            };
+          }),
+          { minDelay: Number(data.minDelay), maxDelay: Number(data.maxDelay) },
+        ),
+      );
+    });
+    app.post("/internal/group-imports/:id/cancel", (c) =>
+      c.json(s.groupImports.cancel(c.req.param("id"))),
+    );
+    app.delete("/internal/group-imports/:id", (c) => {
+      s.groupImports.remove(c.req.param("id"));
+      return c.json({ success: true });
+    });
     app.put("/internal/automations/:chatId", async (c) =>
       c.json(
         await s.automations.save(
@@ -433,7 +463,7 @@ export function createApi(s: Services) {
   app.onError((error, c) => {
     s.log("error", "api.request.failed");
     const safe =
-      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare|Broadcast |Automation )/.test(
+      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare|Broadcast |Automation |Group import )/.test(
         error.message,
       );
     return c.json(

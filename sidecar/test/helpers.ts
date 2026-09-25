@@ -15,12 +15,14 @@ import { BroadcastService } from "../src/broadcast/broadcast-service";
 import { ContactRepository } from "../src/contacts/contact-repository";
 import { AutomationRepository } from "../src/automation/automation-repository";
 import { AutomationService } from "../src/automation/automation-service";
+import { GroupImportService } from "../src/groups/group-import-service";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
 import type {
   Message,
   ConnectionState,
   GroupInfo,
+  GroupAddResult,
 } from "../src/messaging/types";
 export const chatId = "60123456789@s.whatsapp.net";
 export function incoming(
@@ -59,6 +61,18 @@ export class FakeProvider implements MessagingProvider {
     const group = (await this.listGroups()).find((g) => g.id === id);
     if (!group) throw new Error("Automation group is unavailable");
     return group;
+  }
+  /** Per-number outcomes to return instead of "added". */
+  addOutcomes = new Map<string, GroupAddResult["status"]>();
+  addCalls: { groupId: string; phones: string[] }[] = [];
+  addError: Error | null = null;
+  async addGroupParticipants(groupId: string, phones: string[]) {
+    this.addCalls.push({ groupId, phones });
+    if (this.addError) throw this.addError;
+    return phones.map((phone) => ({
+      phone,
+      status: this.addOutcomes.get(phone) ?? ("added" as const),
+    }));
   }
   async connect() {
     this.state = { status: "connected" };
@@ -121,6 +135,7 @@ export function setup(ai?: AIProvider) {
     events,
     () => 0,
   );
+  const groupImports = new GroupImportService(provider, events, () => 0);
   const automationRepository = new AutomationRepository(db);
   const automations = new AutomationService(
     automationRepository,
@@ -149,6 +164,7 @@ export function setup(ai?: AIProvider) {
     copilot,
     broadcasts,
     automations,
+    groupImports,
     port: 8787,
     databaseHealthy: () => true,
     log: () => {},
@@ -199,6 +215,7 @@ export function setup(ai?: AIProvider) {
     copilot,
     broadcasts,
     automations,
+    groupImports,
     automationRepository,
     contacts,
     requests,

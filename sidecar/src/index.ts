@@ -21,6 +21,7 @@ import { BroadcastService } from "./broadcast/broadcast-service";
 import { ContactRepository } from "./contacts/contact-repository";
 import { AutomationRepository } from "./automation/automation-repository";
 import { AutomationService } from "./automation/automation-service";
+import { GroupImportService } from "./groups/group-import-service";
 process.umask(0o077);
 const port = Number(process.env.WAGATE_PORT || 8787);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
@@ -112,6 +113,7 @@ const broadcasts = new BroadcastService(
   provider,
   events,
 );
+const groupImports = new GroupImportService(provider, events);
 const automations = new AutomationService(
   new AutomationRepository(db),
   ai,
@@ -143,6 +145,7 @@ const services = {
   drafts,
   copilot,
   broadcasts,
+  groupImports,
   automations,
   port,
   databaseHealthy,
@@ -184,6 +187,7 @@ const shutdown = async () => {
   clearTimeout(accountResync);
   copilot.close();
   broadcasts.close();
+  groupImports.close();
   automations.close();
   tunnel.close();
   server.stop(true);
