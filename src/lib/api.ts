@@ -23,6 +23,9 @@ export type {
   BroadcastEvent,
   BroadcastRecipient,
   GroupInfo,
+  GroupImport,
+  GroupImportMember,
+  GroupAddResult,
 } from "../../sidecar/src/messaging/types";
 export type {
   AutomationPost,
@@ -40,6 +43,7 @@ import type {
   Draft,
   ConnectionState,
   Broadcast,
+  GroupImport,
 } from "../../sidecar/src/messaging/types";
 export interface TunnelState {
   status: "off" | "installing" | "starting" | "online" | "error";
@@ -60,6 +64,7 @@ export interface Snapshot {
   broadcasts: Broadcast[];
   automations: GroupAutomation[];
   automationPosts: AutomationPost[];
+  groupImports: GroupImport[];
   alerts: { id: number; error: string }[];
 }
 export const tunnelLabel: Record<string, string> = {

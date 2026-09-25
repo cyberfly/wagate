@@ -11,6 +11,7 @@ import type {
   ContactNames,
   Message,
   MessageReceipt,
+  PhoneLink,
 } from "../types";
 /** Protobuf Longs, numbers and numeric strings; 0 and junk become undefined. */
 function number(value: unknown) {
@@ -106,6 +107,61 @@ export function normalizeContacts(contacts: Partial<Contact>[]): ContactNames[] 
   }
   return result;
 }
+/**
+ * LID-to-phone pairs from anything that names a person both ways: contacts,
+ * group participants, or a message key and its `Alt` twin.
+ */
+export function phoneLinks(
+  people: { id?: string | null; lid?: string | null; phoneNumber?: string | null }[],
+): PhoneLink[] {
+  const links = new Map<string, string>();
+  for (const p of people) {
+    const ids = [p.id, p.lid, p.phoneNumber].filter((id): id is string => !!id);
+    const lid = ids.find((id) => id.endsWith("@lid")),
+      phone = ids.find((id) => id.endsWith("@s.whatsapp.net"));
+    if (lid && phone) links.set(jidNormalizedUser(lid), jidNormalizedUser(phone));
+  }
+  return [...links].map(([lid, phone]) => ({ lid, phone }));
+}
+/**
+ * Who sent a group message. Live messages carry it in the key; synced history
+ * carries it only in the message's own `participant` field.
+ */
+function participant(raw: Pick<WAMessage, "key" | "participant">) {
+  return raw.key.participant || raw.participant || undefined;
+}
+/** The LID and phone number a message reveals for its sender and chat. */
+export function keyLinks(raw: Pick<WAMessage, "key" | "participant">) {
+  return phoneLinks([
+    { id: participant(raw), phoneNumber: raw.key.participantAlt },
+    { id: raw.key.remoteJid, phoneNumber: raw.key.remoteJidAlt },
+  ]);
+}
+/**
+ * In groups WhatsApp often names a sender by LID and puts their phone number
+ * in `participantAlt`. The phone number is dialable and matches names saved
+ * in your phone, so it is preferred.
+ */
+function sender(raw: WAMessage) {
+  const id = participant(raw),
+    alt = raw.key.participantAlt;
+  return id?.endsWith("@lid") && alt?.endsWith("@s.whatsapp.net") ? alt : id;
+}
+/**
+ * The profile name a message carries, stored under every id its sender has.
+ * Baileys reports push names for new messages only; synced history needs this.
+ */
+export function senderNames(raw: WAMessage): ContactNames[] {
+  if (raw.key.fromMe || !raw.pushName) return [];
+  const ids = [participant(raw), raw.key.participantAlt];
+  if (!participant(raw))
+    ids.push(raw.key.remoteJid ?? undefined, raw.key.remoteJidAlt ?? undefined);
+  return normalizeContacts(
+    ids
+      .filter((id): id is string => !!id)
+      .map((id) => ({ id, notify: raw.pushName! })),
+  );
+}
 export function normalizeMessage(
   raw: WAMessage,
   selfId?: string,
@@ -158,7 +214,7 @@ export function normalizeMessage(
     providerMessageId: id,
     chatId,
     senderId: jidNormalizedUser(
-      raw.key.fromMe && selfId ? selfId : raw.key.participant || jid,
+      raw.key.fromMe && selfId ? selfId : sender(raw) || jid,
     ),
     direction: raw.key.fromMe ? "outgoing" : "incoming",
     type,

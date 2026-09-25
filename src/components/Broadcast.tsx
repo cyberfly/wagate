@@ -7,6 +7,7 @@ import {
 } from "react";
 import { request, type Broadcast as Summary } from "../lib/api";
 import { BroadcastLog } from "./BroadcastLog";
+import { PaceChooser, paceValid } from "./PaceChooser";
 import {
   maxRecipients,
   nameFor,
@@ -98,12 +99,7 @@ export function Broadcast({ broadcasts, connected, busy, act }: Props) {
   const ready = rows.filter((r) => !r.issue && !excluded.has(r.index));
   const attention = rows.filter((r) => r.issue).length;
   const running = broadcasts.find((b) => b.status === "running");
-  const delaysValid =
-    Number.isInteger(minDelay) &&
-    Number.isInteger(maxDelay) &&
-    minDelay >= 5 &&
-    maxDelay <= 600 &&
-    minDelay <= maxDelay;
+  const delaysValid = paceValid(minDelay, maxDelay);
   const blocker = !connected
     ? "Connect WhatsApp before sending."
     : running
@@ -315,27 +311,16 @@ export function Broadcast({ broadcasts, connected, busy, act }: Props) {
               <code>{"{{First Name|there}}"}</code> to use “there” when a cell
               is empty.
             </small>
-            <label htmlFor="minDelay">Wait between messages</label>
-            <div className="delay-row">
-              <input
-                id="minDelay"
-                type="number"
-                min={5}
-                max={600}
-                value={minDelay}
-                onChange={(e) => setMinDelay(Number(e.target.value))}
-              />
-              <span>to</span>
-              <input
-                aria-label="Maximum wait in seconds"
-                type="number"
-                min={5}
-                max={600}
-                value={maxDelay}
-                onChange={(e) => setMaxDelay(Number(e.target.value))}
-              />
-              <span>seconds</span>
-            </div>
+            <PaceChooser
+              id="broadcastPace"
+              label="Wait between messages"
+              minDelay={minDelay}
+              maxDelay={maxDelay}
+              onChange={(min, max) => {
+                setMinDelay(min);
+                setMaxDelay(max);
+              }}
+            />
             <small>
               A random gap in this range separates each message. Sending many
               identical messages quickly is the most common reason WhatsApp

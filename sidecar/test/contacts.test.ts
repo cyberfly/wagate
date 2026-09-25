@@ -4,7 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setup } from "./helpers";
-import { normalizeContacts } from "../src/messaging/baileys/normalizer";
+import {
+  normalizeContacts,
+  normalizeMessage,
+  senderNames,
+  phoneLinks,
+  keyLinks,
+} from "../src/messaging/baileys/normalizer";
 import { openDatabase } from "../src/db/database";
 import { migrations } from "../src/db/schema";
 import { ChatRepository } from "../src/chats/chat-repository";
@@ -109,4 +115,167 @@ test("the chats API returns contact names", async () => {
   ).json()) as { chats: { id: string; name: string }[] };
   expect(chats).toContainEqual(expect.objectContaining({ id: direct, name: "Aina" }));
   s.close();
+});
+test("group senders are named by phone number when WhatsApp gives one, with their push name", () => {
+  const group = "120363000000000001@g.us";
+  const raw = {
+    key: {
+      id: "g1",
+      remoteJid: group,
+      fromMe: false,
+      participant: "106721380942046@lid",
+      participantAlt: "60120000009@s.whatsapp.net",
+    },
+    pushName: "Hafiz",
+    message: { conversation: "boleh je" },
+    messageTimestamp: 1_700_000_000,
+  };
+  expect(normalizeMessage(raw)?.senderId).toBe("60120000009@s.whatsapp.net");
+  // Without a phone number the LID stays the sender.
+  expect(
+    normalizeMessage({ ...raw, key: { ...raw.key, participantAlt: undefined } })
+      ?.senderId,
+  ).toBe("106721380942046@lid");
+  expect(senderNames(raw)).toEqual([
+    { id: "106721380942046@lid", pushName: "Hafiz" },
+    { id: "60120000009@s.whatsapp.net", pushName: "Hafiz" },
+  ]);
+  expect(senderNames({ ...raw, key: { ...raw.key, fromMe: true } })).toEqual([]);
+});
+test("stored messages carry the sender's best name", async () => {
+  const s = setup();
+  const group = "120363000000000001@g.us";
+  const message = (id: string, senderId: string) => ({
+    id,
+    provider: "whatsapp" as const,
+    providerMessageId: id,
+    chatId: group,
+    senderId,
+    direction: "incoming" as const,
+    type: "text" as const,
+    text: "hi",
+    timestamp: Date.now(),
+  });
+  s.messages.save(message("a", "106721380942046@lid"));
+  s.messages.save(message("b", direct));
+  s.contacts.save([
+    { id: "106721380942046@lid", pushName: "Hafiz" },
+    { id: direct, name: "Aina — Studio", pushName: "Ai" },
+  ]);
+  expect(
+    s.messages.page(group).messages.map((m) => [m.id, m.senderName]),
+  ).toEqual([
+    ["a", "Hafiz"],
+    ["b", "Aina — Studio"],
+  ]);
+  const res = await s.call(
+    `/v1/chats/${encodeURIComponent(group)}/messages`,
+  );
+  const body = (await res.json()) as { messages: { senderName: string }[] };
+  expect(body.messages.map((m) => m.senderName)).toEqual(["Hafiz", "Aina — Studio"]);
+});
+test("LIDs are linked to phone numbers from contacts, members and message keys", () => {
+  expect(
+    phoneLinks([
+      { id: "106721380942046@lid", phoneNumber: "60120000009@s.whatsapp.net" },
+      { id: "60120000008@s.whatsapp.net", lid: "220409316274252@lid" },
+      // Nothing to link: one side is missing.
+      { id: "106386457382946@lid" },
+    ]),
+  ).toEqual([
+    { lid: "106721380942046@lid", phone: "60120000009@s.whatsapp.net" },
+    { lid: "220409316274252@lid", phone: "60120000008@s.whatsapp.net" },
+  ]);
+  expect(
+    keyLinks({
+      key: {
+        remoteJid: "120363000000000001@g.us",
+        participant: "106721380942046@lid",
+        participantAlt: "60120000009@s.whatsapp.net",
+      },
+    }),
+  ).toEqual([{ lid: "106721380942046@lid", phone: "60120000009@s.whatsapp.net" }]);
+});
+test("a LID sender shows the phone number and saved name behind it", () => {
+  const s = setup();
+  const group = "120363000000000001@g.us",
+    lid = "106721380942046@lid",
+    phone = "60120000009@s.whatsapp.net";
+  s.messages.save({
+    id: "old",
+    provider: "whatsapp",
+    providerMessageId: "old",
+    chatId: group,
+    senderId: lid,
+    direction: "incoming",
+    type: "text",
+    text: "boleh je",
+    timestamp: Date.now(),
+  });
+  const sender = () => {
+    const [m] = s.messages.page(group).messages;
+    return [m.senderName, m.senderPhone];
+  };
+  expect(sender()).toEqual([null, null]);
+  s.contacts.linkPhones([{ lid, phone }]);
+  expect(sender()).toEqual([null, phone]);
+  s.contacts.save([{ id: lid, pushName: "Hafiz" }]);
+  expect(sender()).toEqual(["Hafiz", phone]);
+  // The name saved in your phone, stored under the number, wins.
+  s.contacts.save([{ id: phone, name: "Hafiz UOB" }]);
+  expect(sender()).toEqual(["Hafiz UOB", phone]);
+});
+test("synced group history takes its sender from the message, and repairs old rows", () => {
+  const s = setup();
+  const group = "120363000000000001@g.us";
+  // History items carry the sender outside the key.
+  const raw = {
+    key: { id: "h1", remoteJid: group, fromMe: false },
+    participant: "106721380942046@lid",
+    pushName: "Hafiz",
+    message: { conversation: "boleh je" },
+    messageTimestamp: 1_700_000_000,
+  };
+  const message = normalizeMessage(raw)!;
+  expect(message.senderId).toBe("106721380942046@lid");
+  expect(senderNames(raw)).toEqual([
+    { id: "106721380942046@lid", pushName: "Hafiz" },
+  ]);
+  // An earlier version stored it as sent by the group.
+  expect(s.messages.save({ ...message, senderId: group })).toBe(true);
+  expect(s.messages.save(message)).toBe(false);
+  expect(s.messages.get(message.id)?.senderId).toBe("106721380942046@lid");
+  // A known sender is never overwritten.
+  expect(s.messages.save({ ...message, senderId: "60120000001@s.whatsapp.net" })).toBe(false);
+  expect(s.messages.get(message.id)?.senderId).toBe("106721380942046@lid");
+});
+test("a group with senderless messages asks the phone to resend them, at most every ten minutes", async () => {
+  const s = setup();
+  const group = "120363000000000002@g.us";
+  const save = (id: string, senderId: string, timestamp: number) =>
+    s.messages.save({
+      id,
+      provider: "whatsapp",
+      providerMessageId: id,
+      chatId: group,
+      senderId,
+      direction: "incoming",
+      type: "text",
+      text: "hi",
+      timestamp,
+    });
+  const repair = async () =>
+    ((await (await s.call(`/internal/chats/${encodeURIComponent(group)}/repair-senders`, "POST")).json()) as {
+      requested: boolean;
+    }).requested;
+  save("known", "106721380942046@lid", 1000);
+  expect(await repair()).toBe(false);
+  save("lost", group, 2000);
+  save("newest", "106721380942046@lid", 3000);
+  expect(await repair()).toBe(true);
+  expect(s.provider.historyRequests).toEqual([
+    { before: expect.objectContaining({ providerMessageId: "newest" }), count: 50 },
+  ]);
+  expect(await repair()).toBe(false);
+  expect(s.provider.historyRequests).toHaveLength(1);
 });
