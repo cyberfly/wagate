@@ -168,3 +168,31 @@ test("an import waits the chosen gap between requests and rejects bad gaps", asy
   ]);
   service.close();
 });
+test("a few numbers can be added straight from a group chat", async () => {
+  const { call, provider } = setup();
+  provider.addOutcomes.set("60120000002", "invite");
+  const add = async (phones: string[], groupId = group) =>
+    call(`/internal/groups/${encodeURIComponent(groupId)}/participants`, "POST", {
+      phones,
+    });
+  const res = await add(["+60120000001", "60120000002", "60120000001"]);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({
+    results: [
+      { phone: "60120000001", status: "added" },
+      { phone: "60120000002", status: "invite" },
+    ],
+  });
+  expect(provider.addCalls).toEqual([
+    { groupId: group, phones: ["60120000001", "60120000002"] },
+  ]);
+  expect(((await (await add(members(6).map((m) => m.phone))).json()) as { error: string }).error)
+    .toContain("Use Add to group");
+  expect(((await (await add(["012345"])).json()) as { error: string }).error).toBe(
+    "Invalid phone number in row 1",
+  );
+  provider.groups[0].isAdmin = false;
+  expect(((await (await add(["60120000003"])).json()) as { error: string }).error)
+    .toContain("admin");
+  expect(provider.addCalls).toHaveLength(1);
+});

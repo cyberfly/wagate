@@ -3511,3 +3511,112 @@ nav button:hover { color: #d7dae0; }
   .inbox-shell:not(.sidebar-minimized) nav small,
   .inbox-shell:not(.sidebar-minimized) .sidebar-bottom { display: none; }
 }
+
+/* Group messages: each sender keeps one hue for their avatar and name. */
+.message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(84%, 720px);
+  margin-bottom: 10px;
+}
+/* The row carries the spacing: a new sender gets room, a run stays close. */
+.message-row .message,
+.inbox-shell .message-row .message {
+  max-width: 100%;
+  min-width: 0;
+  margin-bottom: 0;
+}
+.message-row.continued {
+  margin-top: -6px;
+}
+.sender-avatar {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 600;
+  color: hsl(var(--sender-hue) 70% 78%);
+  background: hsl(var(--sender-hue) 30% 28%);
+}
+.sender-avatar.spacer {
+  visibility: hidden;
+}
+.message-sender {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  overflow: hidden;
+}
+.message-sender strong {
+  color: hsl(var(--sender-hue) 65% 72%);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.message-sender small {
+  color: #7f848e;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Add people from a group's chat. */
+.add-member {
+  flex-shrink: 0;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #3e4451;
+  background: #21252b;
+}
+.add-member-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+.add-member-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px;
+  gap: 12px;
+  align-items: start;
+}
+.add-member label {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  font-size: 12px;
+}
+.add-member textarea,
+.add-member input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.add-member textarea {
+  resize: vertical;
+  min-height: 44px;
+}
+.add-member .inline-error {
+  margin: 0;
+}
+.add-member-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.add-member-results li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}

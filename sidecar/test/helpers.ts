@@ -62,6 +62,12 @@ export class FakeProvider implements MessagingProvider {
     if (!group) throw new Error("Automation group is unavailable");
     return group;
   }
+  historyRequests: { before: Pick<Message, "chatId" | "providerMessageId">; count: number }[] = [];
+  async requestHistory(before: Message, count: number) {
+    if (this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    this.historyRequests.push({ before, count });
+  }
   /** Per-number outcomes to return instead of "added". */
   addOutcomes = new Map<string, GroupAddResult["status"]>();
   addCalls: { groupId: string; phones: string[] }[] = [];

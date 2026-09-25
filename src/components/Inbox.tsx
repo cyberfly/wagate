@@ -1,7 +1,7 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import { AddMember } from "./AddMember";
 import {
   request,
-  displayName,
   chatTitle,
   phoneLabel,
   initials,
@@ -44,6 +44,20 @@ export function Inbox(p: Props) {
     if (id) setCompositions((current) => ({ ...current, [id]: value }));
   };
   const chat = p.chats.find((c) => c.id === p.selected);
+  const [addingTo, setAddingTo] = useState<string | null>(null);
+  // Group messages synced without their sender are asked for again once per
+  // visit; the resent copies fill in names as they arrive.
+  const repairRequested = useRef(new Set<string>());
+  const senderless = chat?.type === "group" && p.messages.some((m) => unknownSender(m));
+  useEffect(() => {
+    if (!p.selected || !senderless || !p.connected) return;
+    if (repairRequested.current.has(p.selected)) return;
+    repairRequested.current.add(p.selected);
+    void request(
+      `/internal/chats/${encodeURIComponent(p.selected)}/repair-senders`,
+      "POST",
+    ).catch(() => repairRequested.current.delete(p.selected!));
+  }, [p.selected, senderless, p.connected]);
   const draft = p.drafts.find((d) => d.status === "pending");
   useEffect(() => {
     const input = composer.current;
@@ -215,6 +229,17 @@ export function Inbox(p: Props) {
                   · {p.connected ? "Ready to send" : "Disconnected"}
                 </small>
               </div>
+              {chat?.type === "group" ? (
+                <button
+                  className={"header-pin header-add icon-button " + (addingTo === chat.id ? "pinned" : "")}
+                  title="Add people"
+                  aria-label="Add people to this group"
+                  aria-expanded={addingTo === chat.id}
+                  onClick={() => setAddingTo(addingTo === chat.id ? null : chat.id)}
+                >
+                  <AddPersonIcon />
+                </button>
+              ) : null}
               {chat ? <button className={"header-pin icon-button " + (chat.pinned ? "pinned" : "")}
                 title={chat.pinned ? "Unpin chat" : "Pin chat"}
                 aria-label={chat.pinned ? "Unpin current chat" : "Pin current chat"}
@@ -242,6 +267,14 @@ export function Inbox(p: Props) {
                 </select>
               </label>
             </header>
+            {chat?.type === "group" && addingTo === chat.id ? (
+              <AddMember
+                key={chat.id}
+                groupId={chat.id}
+                connected={p.connected}
+                close={() => setAddingTo(null)}
+              />
+            ) : null}
             {chat?.aiMode === "copilot" ? (
               <div className="copilot-notice">
                 ✧ Copilot sends recent messages to OpenRouter to draft replies.
@@ -261,14 +294,22 @@ export function Inbox(p: Props) {
                   No stored messages in this conversation.
                 </div>
               )}
-              {p.messages.map((m, index) => (
-                <Fragment key={m.id}>
-                  {index === 0 || new Date(p.messages[index - 1].timestamp).toDateString() !== new Date(m.timestamp).toDateString() ? (
-                    <div className="message-day">{new Date(m.timestamp).toDateString() === new Date().toDateString() ? "Today" : new Date(m.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div>
-                  ) : null}
-                  <MessageBubble message={m} group={chat?.type === "group"} />
-                </Fragment>
-              ))}
+              {p.messages.map((m, index) => {
+                const previous = p.messages[index - 1];
+                const newDay = !previous || new Date(previous.timestamp).toDateString() !== new Date(m.timestamp).toDateString();
+                return (
+                  <Fragment key={m.id}>
+                    {newDay ? (
+                      <div className="message-day">{new Date(m.timestamp).toDateString() === new Date().toDateString() ? "Today" : new Date(m.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div>
+                    ) : null}
+                    <MessageBubble
+                      message={m}
+                      group={chat?.type === "group"}
+                      continued={!newDay && previous.direction === m.direction && !unknownSender(m) && who(previous) === who(m)}
+                    />
+                  </Fragment>
+                );
+              })}
               <div ref={bottom} />
             </div>
             {p.drafts.some((d) => d.status === "uncertain") ? (
@@ -397,14 +438,40 @@ export function Inbox(p: Props) {
     </section>
   );
 }
+function AddPersonIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4" /><path d="M2 21c0-3.9 3.1-7 7-7s7 3.1 7 7M19 8v6M16 11h6" /></svg>;
+}
 function PinIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5-4 1-3 5v3l-7-7h3l5-3zM9 15l-6 6" /></svg>;
 }
-function MessageBubble({ message: m, group }: { message: Message; group?: boolean }) {
-  return (
+/** Stored without its sender, so it reads as sent by the group itself. */
+function unknownSender(m: Message) {
+  return m.direction === "incoming" && m.senderId === m.chatId;
+}
+/** One person, whether a message names them by LID or by phone number. */
+function who(m: Message) {
+  return m.senderPhone || m.senderId;
+}
+/** A stable hue per sender, so each person keeps one colour in a group. */
+function senderHue(id: string) {
+  let hash = 0;
+  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  return Math.abs(hash) % 360;
+}
+function MessageBubble({
+  message: m,
+  group,
+  continued,
+}: {
+  message: Message;
+  group?: boolean;
+  /** Same sender as the message above, so the name and avatar are not repeated. */
+  continued?: boolean;
+}) {
+  const bubble = (
     <article className={"message " + m.direction}>
-      {m.direction === "incoming" && group ? (
-        <small>{displayName(m.senderId)}</small>
+      {m.direction === "incoming" && group && !continued ? (
+        <MessageSender message={m} />
       ) : null}
       {m.type !== "text" ? (
         <div className="media-label">
@@ -420,5 +487,38 @@ function MessageBubble({ message: m, group }: { message: Message; group?: boolea
         {m.direction === "outgoing" ? " · You" : ""}
       </time>
     </article>
+  );
+  if (m.direction !== "incoming" || !group) return bubble;
+  const name = senderLabel(m);
+  return (
+    <div
+      className={"message-row" + (continued ? " continued" : "")}
+      style={{ "--sender-hue": senderHue(who(m)) } as CSSProperties}
+    >
+      {continued ? (
+        <span className="sender-avatar spacer" aria-hidden="true" />
+      ) : (
+        <span className="sender-avatar" aria-hidden="true" title={name}>
+          {m.senderName ? initials(m.senderName) : "?"}
+        </span>
+      )}
+      {bubble}
+    </div>
+  );
+}
+/** The sender's number; a LID is not a phone number, so it is never shown as one. */
+function senderPhone(m: Message) {
+  return m.senderPhone ? phoneLabel(m.senderPhone) : null;
+}
+function senderLabel(m: Message) {
+  return m.senderName || senderPhone(m) || "Unknown member";
+}
+function MessageSender({ message: m }: { message: Message }) {
+  const phone = senderPhone(m);
+  return (
+    <div className="message-sender" title={m.senderId}>
+      <strong>{senderLabel(m)}</strong>
+      {m.senderName && phone ? <small>{phone}</small> : null}
+    </div>
   );
 }

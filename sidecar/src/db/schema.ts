@@ -133,6 +133,13 @@ CREATE INDEX automation_posts_chat ON automation_posts(chat_id,created_at DESC,i
 CREATE INDEX automation_posts_receipt ON automation_posts(provider_message_id);
 PRAGMA user_version = 8;
 `;
+// Group senders are often known only by LID. WhatsApp reveals the phone number
+// behind a LID in messages, contacts and group member lists; it is kept here
+// so old messages show a number and the name saved for it.
+export const lidPhonesSchema = `
+CREATE TABLE lid_phones (lid TEXT PRIMARY KEY, phone TEXT NOT NULL, updated_at INTEGER NOT NULL);
+PRAGMA user_version = 9;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -143,4 +150,5 @@ export const migrations = [
   chatOrderSchema,
   inboxPinsSchema,
   groupAutomationSchema,
+  lidPhonesSchema,
 ];

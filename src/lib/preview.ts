@@ -102,6 +102,45 @@ const messages: Message[] = [
     timestamp: now,
   },
 ];
+// A community group: members named, known only by number, and one message
+// synced without its sender.
+const community: Chat = {
+  id: "120363000000000009@g.us",
+  provider: "whatsapp",
+  name: "AI learners",
+  type: "group",
+  lastMessageAt: now - 60000,
+  aiMode: "off",
+  pinned: false,
+  archived: false,
+};
+chats.splice(1, 0, community);
+const groupMessage = (
+  n: number,
+  sender: Partial<Message>,
+  text: string,
+  minutesAgo: number,
+): Message => ({
+  id: `group-${n}`,
+  provider: "whatsapp",
+  providerMessageId: `group-${n}`,
+  chatId: community.id,
+  senderId: community.id,
+  direction: "incoming",
+  type: "text",
+  text,
+  timestamp: now - minutesAgo * 60000,
+  ...sender,
+});
+const nadia = { senderId: "100000000000001@lid", senderName: "Nadia", senderPhone: "60155550101@s.whatsapp.net" },
+  unnamed = { senderId: "60155550102@s.whatsapp.net", senderName: null, senderPhone: "60155550102@s.whatsapp.net" };
+messages.push(
+  groupMessage(1, {}, "Is there a recording of last night’s class?", 30),
+  groupMessage(2, nadia, "Can the plugin technique work in ChatGPT too?", 12),
+  groupMessage(3, nadia, "I haven’t tried it there yet.", 11),
+  groupMessage(4, unnamed, "Check your email for the link.", 5),
+  groupMessage(5, { senderId: "me", direction: "outgoing" }, "The recording is up — see the pinned post.", 1),
+);
 const drafts: Draft[] = [
   {
     id: "sample-draft",
@@ -379,6 +418,15 @@ export async function previewRequest(
     );
   if (url.pathname.startsWith("/internal/broadcasts"))
     return broadcastRequest(url.pathname, method, data);
+  if (/^\/internal\/groups\/[^/]+\/participants$/.test(url.pathname))
+    // Numbers ending in 7 stand in for people whose privacy needs an invite.
+    return {
+      results: (data?.phones as string[]).map((phone) =>
+        phone.endsWith("7")
+          ? { phone, status: "invite", error: "Their privacy settings need an invite link" }
+          : { phone, status: "added" },
+      ),
+    };
   if (url.pathname.startsWith("/internal/group-imports"))
     return groupImportRequest(url.pathname, method, data);
   if (url.pathname === "/internal/snapshot") {
@@ -513,5 +561,6 @@ export async function previewRequest(
     return {};
   }
   if (path.endsWith("/draft")) return drafts[0];
+  if (path.endsWith("/repair-senders")) return { requested: false };
   throw new Error("This action is not available in the sample UI");
 }

@@ -271,6 +271,16 @@ export function createApi(s: Services) {
         ),
       );
     });
+    app.post("/internal/groups/:groupId/participants", async (c) => {
+      const data = await body(c);
+      if (!Array.isArray(data.phones)) throw new Error("Invalid phone numbers");
+      return c.json(
+        await s.groupImports.add(
+          resolveChatId(c.req.param("groupId")!),
+          data.phones.map((p: unknown) => string(p, "phone number", 20)),
+        ),
+      );
+    });
     app.post("/internal/group-imports/:id/cancel", (c) =>
       c.json(s.groupImports.cancel(c.req.param("id"))),
     );
@@ -374,6 +384,18 @@ export function createApi(s: Services) {
       const chatId = resolveChatId(c.req.param("chatId")!);
       if (!s.chats.get(chatId)) return c.json({ error: "Chat not found" }, 404);
       return c.json(s.chats.setMode(chatId, mode));
+    });
+    // Recent group messages stored without a sender are asked for again, at
+    // most once every ten minutes per chat; the copies fill the sender in.
+    const repairs = new Map<string, number>();
+    app.post("/internal/chats/:chatId/repair-senders", async (c) => {
+      const chatId = resolveChatId(c.req.param("chatId")!);
+      const anchor = s.messages.senderRepairAnchor(chatId);
+      if (!anchor || Date.now() - (repairs.get(chatId) ?? 0) < 10 * 60_000)
+        return c.json({ requested: false });
+      repairs.set(chatId, Date.now());
+      await s.provider.requestHistory(anchor, 50);
+      return c.json({ requested: true });
     });
     app.post("/internal/chats/:chatId/draft", async (c) =>
       c.json(await s.copilot.generate(resolveChatId(c.req.param("chatId")!))),

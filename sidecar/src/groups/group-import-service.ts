@@ -89,6 +89,28 @@ export class GroupImportService {
     this.schedule(job, 0);
     return job;
   }
+  /**
+   * Adds a few numbers at once, for adding someone from the group's chat.
+   * Longer lists go through `start`, which paces its requests.
+   */
+  async add(groupId: string, phones: string[]) {
+    if (!/^\d{5,20}(?:-\d{5,20})?@g\.us$/.test(groupId))
+      throw new Error("Invalid group");
+    if (!phones.length || phones.length > batchSize)
+      throw new Error(
+        `Group import adds 1–${batchSize} numbers at a time here. Use Add to group for a longer list.`,
+      );
+    const list = [...new Set(phones.map((p) => String(p).trim().replace(/^\+/, "")))];
+    for (const [i, phone] of list.entries())
+      if (!/^[1-9]\d{6,14}$/.test(phone))
+        throw new Error(`Invalid phone number in row ${i + 1}`);
+    const group = await this.provider.getGroup(groupId);
+    if (!group.isAdmin)
+      throw new Error(
+        "Group import needs you to be an admin of this group on WhatsApp",
+      );
+    return { results: await this.provider.addGroupParticipants(groupId, list) };
+  }
   cancel(id: string) {
     const job = this.find(id);
     if (job.status !== "running") throw new Error("Group import is not running");

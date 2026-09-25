@@ -38,6 +38,11 @@ export interface ChatUpdate {
   pinnedAt?: number | null;
   archived?: boolean;
 }
+/** A person's LID and phone-number id, as WhatsApp revealed them. */
+export interface PhoneLink {
+  lid: string;
+  phone: string;
+}
 /** Names WhatsApp knows for one person. Missing fields leave stored ones alone. */
 export interface ContactNames {
   id: string;
@@ -52,6 +57,10 @@ export interface Message {
   providerMessageId: string;
   chatId: string;
   senderId: string;
+  /** The sender's saved or profile name, when WhatsApp has told us one. */
+  senderName?: string | null;
+  /** The sender's phone-number id, when known; group senders are often LIDs. */
+  senderPhone?: string | null;
   direction: "incoming" | "outgoing";
   type: "text" | "image" | "video" | "audio" | "document" | "unknown";
   text?: string;

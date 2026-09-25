@@ -16,6 +16,9 @@ import {
   normalizeContacts,
   normalizeMessage,
   normalizeReceipt,
+  senderNames,
+  keyLinks,
+  phoneLinks,
 } from "./normalizer";
 export class BaileysProvider implements MessagingProvider {
   private socket?: WASocket;
@@ -37,6 +40,7 @@ export class BaileysProvider implements MessagingProvider {
     if (!socket || this.state.status !== "connected")
       throw new Error("WhatsApp is disconnected");
     const groups = await socket.groupFetchAllParticipating();
+    this.receiveLinks(Object.values(groups).flatMap((g) => g.participants));
     return Object.values(groups)
       .map((g) => groupInfo(g, socket.user))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -45,7 +49,30 @@ export class BaileysProvider implements MessagingProvider {
     const socket = this.socket;
     if (!socket || this.state.status !== "connected")
       throw new Error("WhatsApp is disconnected");
-    return groupInfo(await socket.groupMetadata(id), socket.user);
+    const group = await socket.groupMetadata(id);
+    this.receiveLinks(group.participants);
+    return groupInfo(group, socket.user);
+  }
+  async requestHistory(
+    before: Parameters<MessagingProvider["requestHistory"]>[0],
+    count: number,
+  ) {
+    const socket = this.socket;
+    if (!socket || this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    const group = before.chatId.endsWith("@g.us");
+    await socket.fetchMessageHistory(
+      count,
+      {
+        remoteJid: before.chatId,
+        id: before.providerMessageId,
+        fromMe: before.direction === "outgoing",
+        ...(group && before.senderId !== before.chatId
+          ? { participant: before.senderId }
+          : {}),
+      },
+      before.timestamp,
+    );
   }
   async addGroupParticipants(groupId: string, phones: string[]) {
     const socket = this.socket;
@@ -124,6 +151,11 @@ export class BaileysProvider implements MessagingProvider {
                 ? jidNormalizedUser(socket.user.id)
                 : undefined,
             });
+            // Group member lists name each LID's phone number, which labels
+            // senders in stored group messages. listGroups records them.
+            setTimeout(() => {
+              if (active()) void this.listGroups().catch(() => {});
+            }, 5000);
           }
           if (update.connection === "close") {
             clearTimeout(this.qrExpiry);
@@ -181,6 +213,7 @@ export class BaileysProvider implements MessagingProvider {
       });
       socket.ev.on("messages.upsert", ({ messages, type }) => {
         if (!active()) return;
+        this.receiveNames(messages);
         for (const raw of messages) {
           try {
             const message = normalizeMessage(raw, socket.user?.id);
@@ -206,6 +239,7 @@ export class BaileysProvider implements MessagingProvider {
       socket.ev.on("messaging-history.set", ({ chats, contacts, messages }) => {
         if (!active()) return;
         this.receiveContacts(contacts);
+        this.receiveNames(messages);
         for (const chat of chats) this.receiveChat(chat);
         for (const raw of messages) {
           try {
@@ -229,6 +263,9 @@ export class BaileysProvider implements MessagingProvider {
       });
       socket.ev.on("contacts.update", (contacts) => {
         if (active()) this.receiveContacts(contacts);
+      });
+      socket.ev.on("lid-mapping.update", ({ lid, pn }) => {
+        if (active()) this.receiveLinks([{ id: lid, phoneNumber: pn }]);
       });
     } catch (error) {
       if (generation === this.generation) {
@@ -276,8 +313,28 @@ export class BaileysProvider implements MessagingProvider {
     await socket.resyncAppState(collections, false);
   }
   private receiveContacts(contacts: Parameters<typeof normalizeContacts>[0]) {
+    this.receiveLinks(contacts ?? []);
     try {
       const names = normalizeContacts(contacts ?? []);
+      if (names.length) this.events.contacts(names);
+    } catch {
+      this.events.error("Could not store contact names");
+    }
+  }
+  private receiveLinks(people: Parameters<typeof phoneLinks>[0]) {
+    try {
+      const links = phoneLinks(people);
+      if (links.length) this.events.phones(links);
+    } catch {
+      this.events.error("Could not store contact names");
+    }
+  }
+  /** Push names and phone numbers on a batch of messages, so group senders show who they are. */
+  private receiveNames(messages: Parameters<typeof senderNames>[0][]) {
+    try {
+      const links = messages.flatMap(keyLinks);
+      if (links.length) this.events.phones(links);
+      const names = messages.flatMap(senderNames);
       if (names.length) this.events.contacts(names);
     } catch {
       this.events.error("Could not store contact names");

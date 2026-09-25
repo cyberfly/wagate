@@ -62,6 +62,7 @@ const provider = new BaileysProvider(vault, {
     if (chats.apply(chat)) events.publish("chat.updated", { id: chat.id });
   },
   contacts: (names) => contacts.save(names),
+  phones: (links) => contacts.linkPhones(links),
   error: () => {
     log("error", "whatsapp.operation.failed");
     events.publish("messaging.error", {

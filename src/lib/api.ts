@@ -25,6 +25,7 @@ export type {
   GroupInfo,
   GroupImport,
   GroupImportMember,
+  GroupAddResult,
 } from "../../sidecar/src/messaging/types";
 export type {
   AutomationPost,
