@@ -151,8 +151,8 @@ export class TunnelService {
     // cloudflared prints the assigned hostname to stderr; stdout is watched too
     // because that varies by version. Output is scanned, never logged.
     const child = this.child;
-    void this.watch(child.stderr);
-    void this.watch(child.stdout);
+    void this.watch(child.stderr, child);
+    void this.watch(child.stdout, child);
     void child.exited.then(() => {
       // Ignore a previous process exiting after a restart already took over.
       if (this.child !== child || this.stopping) return;
@@ -160,22 +160,27 @@ export class TunnelService {
     });
     return this.status();
   }
-  private async watch(stream: unknown) {
+  /**
+   * Reads one of cloudflared's outputs until it closes. Reading continues
+   * after the address is found: leaving the loop cancels the pipe, and
+   * cloudflared then dies on its next log line (broken pipe).
+   */
+  private async watch(stream: unknown, child: ReturnType<typeof Bun.spawn>) {
     if (!stream || typeof stream === "number") return;
     const decoder = new TextDecoder();
     let tail = "";
     try {
       for await (const chunk of stream as AsyncIterable<Uint8Array>) {
-        if (this.state.status !== "starting") return;
+        if (this.child !== child || this.state.status !== "starting") continue;
         // Keep a small tail so a hostname split across chunks still matches.
         tail = (tail + decoder.decode(chunk, { stream: true })).slice(-4096);
         const match = quickUrl.exec(tail);
         if (match) {
           if (this.timer) clearTimeout(this.timer);
           this.timer = null;
+          tail = "";
           this.options.log("info", "tunnel.online");
           this.set({ status: "online", url: match[0], error: null });
-          return;
         }
       }
     } catch {

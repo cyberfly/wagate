@@ -47,6 +47,20 @@ test("a quick tunnel reports its public address and serves the public API there"
   expect(tunnel.status()).toMatchObject({ status: "off", url: null });
   tunnel.close();
 });
+test("the tunnel stays up while cloudflared keeps logging after announcing its address", async () => {
+  // Real cloudflared logs connection events after the hostname. If Wagate
+  // stopped reading, those writes hit a closed pipe and cloudflared, a Go
+  // program, exited. The stand-in exits on a failed write the same way.
+  const fake = fakeCloudflared(
+    `echo "INF |  ${url}  |" >&2\nwhile true; do echo "INF Registered tunnel connection" >&2 || exit 1; echo "INF ok" || exit 1; sleep 0.05; done\n`,
+  );
+  const tunnel = service(fake.path);
+  tunnel.start();
+  expect(await until(() => tunnel.status().status === "online")).toBe(true);
+  await Bun.sleep(500);
+  expect(tunnel.status()).toMatchObject({ status: "online", url, error: null });
+  tunnel.close();
+});
 test("a hostname split across reads is still recognised", async () => {
   const fake = fakeCloudflared(
     `printf 'INF https://silent-forest-' >&2\nsleep 0.3\nprintf '1234.trycloudflare.com\\n' >&2\nwhile true; do sleep 1; done\n`,
