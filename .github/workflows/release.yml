@@ -1,0 +1,91 @@
+# Builds Wagate installers and attaches them to a GitHub release.
+#
+# - Pushing a tag such as v0.3.0 builds Windows and macOS and uploads both to
+#   that tag's release (a draft is created if the release does not exist yet).
+# - "Run workflow" builds an existing tag on demand, for example to add the
+#   Windows installer to a release that was built on a Mac.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and upload to
+        required: true
+        default: v0.2.0
+      platforms:
+        description: Which installers to build
+        type: choice
+        options: [windows, macos, all]
+        default: windows
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  GH_TOKEN: ${{ github.token }}
+  BUN_VERSION: 1.3.14
+
+jobs:
+  release:
+    name: Ensure the release exists
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create a draft release when missing
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "Wagate $TAG" --generate-notes
+
+  windows:
+    name: Windows installer
+    needs: release
+    if: github.event_name == 'push' || inputs.platforms != 'macos'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      # The sidecar is compiled for Windows by the build's beforeBuildCommand.
+      - run: bun run tauri build --bundles nsis
+      - name: Upload the installer
+        run: gh release upload "$TAG" src-tauri/target/release/bundle/nsis/*.exe --clobber
+
+  macos:
+    name: macOS (Apple Silicon)
+    needs: release
+    if: github.event_name == 'push' || inputs.platforms != 'windows'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - run: bun run tauri build --bundles app,dmg
+      - name: Upload the disk image and zipped app
+        run: |
+          version=$(node -p "require('./package.json').version")
+          bundle=src-tauri/target/release/bundle
+          ditto -c -k --keepParent "$bundle/macos/Wagate.app" "Wagate_${version}_aarch64.app.zip"
+          gh release upload "$TAG" "$bundle"/dmg/*.dmg "Wagate_${version}_aarch64.app.zip" --clobber
