@@ -15,16 +15,24 @@ export class Vault {
       "CREATE TABLE IF NOT EXISTS secrets (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
     );
   }
-  static async open(db: Database, dataDir: string) {
+  /**
+   * `others` are further databases sealed with the same key, such as other
+   * profiles'; a fresh key must not be made while any of them holds secrets.
+   */
+  static async open(
+    db: Database,
+    dataDir: string,
+    others: () => Database[] = () => [],
+  ) {
     const name =
       "vault-" +
       createHash("sha256").update(dataDir).digest("hex").slice(0, 24);
     let key = await Bun.secrets.get({ service: "com.wagate.desktop", name });
     if (!key) {
-      const existing = db
-        .query("SELECT name FROM sqlite_master WHERE name='secrets'")
-        .get();
-      if (existing && db.query("SELECT id FROM secrets LIMIT 1").get())
+      const sealed = (d: Database) =>
+        !!d.query("SELECT name FROM sqlite_master WHERE name='secrets'").get() &&
+        !!d.query("SELECT id FROM secrets LIMIT 1").get();
+      if (sealed(db) || others().some(sealed))
         throw new Error(
           "Secure storage key is missing; existing credentials cannot be decrypted",
         );
@@ -36,6 +44,13 @@ export class Vault {
       });
     }
     return new Vault(db, Buffer.from(key, "base64"));
+  }
+  /**
+   * The same master key over another database, so each profile keeps its own
+   * secrets without another entry in the OS credential store.
+   */
+  forDatabase(db: Database) {
+    return new Vault(db, this.master);
   }
   get(id: string): string | null {
     const row = this.db

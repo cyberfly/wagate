@@ -1,28 +1,26 @@
 import { openDatabase } from "../src/db/database";
-import { ChatRepository } from "../src/chats/chat-repository";
-import { MessageRepository } from "../src/messages/message-repository";
-import { MessageService } from "../src/messages/message-service";
 import { EventBus } from "../src/events/event-bus";
 import { Settings } from "../src/config/settings";
 import { ApiKeys } from "../src/security/api-keys";
 import { Vault } from "../src/security/vault";
-import { DraftRepository } from "../src/ai/draft-repository";
-import { CopilotService } from "../src/ai/copilot-service";
 import { createApi } from "../src/api/server";
+import { ProfileManager } from "../src/profiles/profile-manager";
+import { ProfileRuntime } from "../src/profiles/profile-runtime";
 import { TunnelService } from "../src/tunnel/tunnel-service";
-import { BroadcastRepository } from "../src/broadcast/broadcast-repository";
-import { BroadcastService } from "../src/broadcast/broadcast-service";
-import { ContactRepository } from "../src/contacts/contact-repository";
 import { AutomationRepository } from "../src/automation/automation-repository";
-import { AutomationService } from "../src/automation/automation-service";
-import { GroupImportService } from "../src/groups/group-import-service";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
-import type { MessagingProvider } from "../src/messaging/messaging-provider";
+import type {
+  MessagingProvider,
+  SendOptions,
+  StoredMessage,
+} from "../src/messaging/messaging-provider";
 import type {
   Message,
   ConnectionState,
   GroupInfo,
   GroupAddResult,
+  OutgoingMedia,
+  ReceivedMessage,
 } from "../src/messaging/types";
 export const chatId = "60123456789@s.whatsapp.net";
 export function incoming(
@@ -92,85 +90,145 @@ export class FakeProvider implements MessagingProvider {
   getConnectionState() {
     return this.state;
   }
-  async sendText(chatId: string, text: string) {
+  /** The message each send replied to, in send order. */
+  quotes: (StoredMessage | undefined)[] = [];
+  async sendText(chatId: string, text: string, options?: SendOptions) {
     const id = crypto.randomUUID().replace(/-/g, "").toUpperCase();
     // Ids take the Baileys provider's shape, so receipts can find them.
-    const m: Message = {
+    const m: ReceivedMessage = {
       ...incoming(`whatsapp:${chatId}:${id}`),
       providerMessageId: id,
       chatId,
       text,
       direction: "outgoing",
+      status: "sent",
+      ...(options?.quoted
+        ? {
+            quoted: {
+              providerMessageId: options.quoted.providerMessageId,
+              senderId: options.quoted.senderId,
+              fromMe: options.quoted.direction === "outgoing",
+              type: options.quoted.type,
+              text: options.quoted.text,
+            },
+          }
+        : {}),
     };
     this.sent.push(m);
+    this.quotes.push(options?.quoted);
     return m;
+  }
+  media: OutgoingMedia[] = [];
+  async sendMedia(chatId: string, media: OutgoingMedia, options?: SendOptions) {
+    this.media.push(media);
+    const m = await this.sendText(chatId, media.caption ?? "", options);
+    m.type = media.mimetype.startsWith("image/") ? "image" : "document";
+    m.text = media.caption ?? media.fileName;
+    m.media = { mimetype: media.mimetype, size: media.data.length };
+    m.mediaSource = new Uint8Array([1]);
+    return m;
+  }
+  reactions: { target: StoredMessage; emoji: string }[] = [];
+  async react(target: StoredMessage, emoji: string) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.reactions.push({ target, emoji });
+  }
+  /** Bytes each attachment downloads as; a missing entry fails the download. */
+  downloads = new Map<string, Uint8Array>();
+  downloadCalls = 0;
+  async downloadMedia(target: StoredMessage) {
+    this.downloadCalls++;
+    const data = this.downloads.get(target.providerMessageId);
+    if (!data) throw new Error("download failed");
+    return data;
+  }
+  read: StoredMessage[][] = [];
+  async markRead(targets: StoredMessage[]) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.read.push(targets);
+  }
+  edits: { target: StoredMessage; text: string }[] = [];
+  async edit(target: StoredMessage, text: string) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.edits.push({ target, text });
+  }
+  revoked: StoredMessage[] = [];
+  async revoke(target: StoredMessage) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.revoked.push(target);
+  }
+  forwarded: { target: StoredMessage; chatId: string }[] = [];
+  async forward(target: StoredMessage, chatId: string) {
+    this.forwarded.push({ target, chatId });
+    const m = await this.sendText(chatId, target.text ?? "");
+    m.type = target.type;
+    m.forwarded = true;
+    return m;
+  }
+  thumbnails = new Map<string, Uint8Array>();
+  thumbnail(target: StoredMessage) {
+    return this.thumbnails.get(target.providerMessageId) ?? null;
   }
 }
 export function setup(ai?: AIProvider) {
   const db = openDatabase(":memory:");
-  const events = new EventBus(),
-    chats = new ChatRepository(db),
-    messages = new MessageRepository(db, chats),
-    settings = new Settings(db),
+  const settings = new Settings(db),
     keys = new ApiKeys(db),
-    drafts = new DraftRepository(db),
-    provider = new FakeProvider(),
     vault = new Vault(db, Buffer.alloc(32, 1));
-  const sender = new MessageService(provider, messages, events);
   const requests: AIRequest[] = [];
-  const copilot = new CopilotService(
-    ai || {
-      generate: async (request) => {
-        requests.push(request);
-        return "Yes, tomorrow works.";
-      },
+  const fakeAi: AIProvider = ai || {
+    generate: async (request) => {
+      requests.push(request);
+      return "Yes, tomorrow works.";
     },
+  };
+  /** Each profile's fake connection, by profile id. */
+  const providers = new Map<string, FakeProvider>();
+  /** Profiles removed so far; their databases are in-memory and just closed. */
+  const destroyed: string[] = [];
+  const profiles = new ProfileManager(db, {
+    open: () => openDatabase(":memory:"),
+    destroy: (id) => destroyed.push(id),
+    removed: (id) => keys.forgetProfile(id),
+    log: () => {},
+    logoutTimeout: 50,
+    runtime: (id, profileDb) =>
+      new ProfileRuntime({
+        id,
+        db: profileDb,
+        ai: fakeAi,
+        aiSettings: settings,
+        log: () => {},
+        provider: () => {
+          const provider = new FakeProvider();
+          providers.set(id, provider);
+          return provider;
+        },
+        // No pacing in tests: the next send is scheduled on the next timer tick.
+        pace: { broadcast: () => 0, groupImport: () => 0 },
+      }),
+  });
+  profiles.load();
+  const main = profiles.main();
+  const {
+    events,
     chats,
     messages,
-    sender,
     drafts,
-    settings,
-    events,
-  );
-  const contacts = new ContactRepository(db);
-  // No pacing in tests: the next send is scheduled on the next timer tick.
-  const broadcasts = new BroadcastService(
-    new BroadcastRepository(db),
     sender,
-    provider,
-    events,
-    () => 0,
-  );
-  const groupImports = new GroupImportService(provider, events, () => 0);
-  const automationRepository = new AutomationRepository(db);
-  const automations = new AutomationService(
-    automationRepository,
-    ai || {
-      generate: async (request) => {
-        requests.push(request);
-        return "A useful community tip.";
-      },
-    },
-    provider,
-    sender,
-    chats,
-    settings,
-    events,
-  );
-  const services = {
-    provider,
-    keys,
-    chats,
-    messages,
-    sender,
-    events,
-    settings,
-    vault: async () => vault,
-    drafts,
     copilot,
     broadcasts,
     automations,
     groupImports,
+    contacts,
+  } = main;
+  const provider = main.provider as FakeProvider;
+  const automationRepository = new AutomationRepository(db);
+  const services = {
+    profiles,
+    keys,
+    settings,
+    vault: async () => vault,
     port: 8787,
     databaseHealthy: () => true,
     log: () => {},
@@ -182,7 +240,7 @@ export function setup(ai?: AIProvider) {
   });
   const tunnel = new TunnelService({
     dataDir: "/nonexistent",
-    events,
+    events: new EventBus(),
     log: () => {},
     fetch: publicApp.fetch,
   });
@@ -225,15 +283,16 @@ export function setup(ai?: AIProvider) {
     automationRepository,
     contacts,
     requests,
+    profiles,
+    providers,
+    destroyed,
     app,
     publicApp,
     tunnel,
     call,
     close: () => {
-      copilot.close();
-      broadcasts.close();
-      automations.close();
       tunnel.close();
+      void profiles.close();
       db.close();
     },
   };

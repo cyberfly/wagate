@@ -1,5 +1,5 @@
 import { existsSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { downloads } from "../config/downloads";
 import { join } from "node:path";
 import type { MessagingProvider } from "../messaging/messaging-provider";
 import type { Broadcast, MessageReceipt } from "../messaging/types";
@@ -33,10 +33,6 @@ function rejection(code?: string) {
         note: `WhatsApp rejected this message${code ? ` (error ${code})` : ""}.`,
         advice: "Check that chat on your phone, then resume to continue with the rest.",
       };
-}
-function downloads() {
-  const dir = join(homedir(), "Downloads");
-  return existsSync(dir) ? dir : homedir();
 }
 /**
  * Sends one broadcast at a time, one message at a time, through the same

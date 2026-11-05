@@ -140,6 +140,54 @@ export const lidPhonesSchema = `
 CREATE TABLE lid_phones (lid TEXT PRIMARY KEY, phone TEXT NOT NULL, updated_at INTEGER NOT NULL);
 PRAGMA user_version = 9;
 `;
+// Profiles let one Wagate run several WhatsApp numbers. The database in the
+// data directory is the main profile's and also holds what every profile
+// shares: API keys, AI settings, and this list. Each further profile keeps its
+// chats, messages and WhatsApp session in its own database under profiles/.
+// An API key's profiles is a JSON array of profile ids; NULL means every one.
+export const profilesSchema = `
+CREATE TABLE profiles (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, account TEXT, created_at INTEGER NOT NULL
+);
+INSERT INTO profiles(id,name,created_at) VALUES('default','Main',0);
+ALTER TABLE api_keys ADD COLUMN profiles TEXT;
+PRAGMA user_version = 10;
+`;
+// Messages gain what a chat shows besides text: attachment details and the
+// encrypted-media reference needed to download it, the message replied to,
+// delivery status, edits and deletions. Reactions are keyed by WhatsApp's
+// message id, which stays the same whichever id (phone or LID) names the chat.
+// Downloaded attachments are cached so a chat reopens without downloading again.
+export const messageFeaturesSchema = `
+ALTER TABLE messages ADD COLUMN media TEXT;
+ALTER TABLE messages ADD COLUMN media_source BLOB;
+ALTER TABLE messages ADD COLUMN quoted TEXT;
+ALTER TABLE messages ADD COLUMN status TEXT;
+ALTER TABLE messages ADD COLUMN edited_at INTEGER;
+ALTER TABLE messages ADD COLUMN deleted_at INTEGER;
+CREATE INDEX messages_provider_id ON messages(provider_message_id);
+CREATE TABLE reactions (
+ provider_message_id TEXT NOT NULL, sender_id TEXT NOT NULL, emoji TEXT NOT NULL,
+ timestamp INTEGER NOT NULL, PRIMARY KEY(provider_message_id, sender_id)
+);
+CREATE TABLE media_cache (
+ message_id TEXT PRIMARY KEY, mimetype TEXT NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL
+);
+PRAGMA user_version = 11;
+`;
+// Unread counts follow WhatsApp: set by history sync, raised by live
+// incoming messages, cleared when read here, on the phone, or by replying.
+// Messages remember whether they were forwarded and whom they mention.
+// Every existing chat starts read.
+export const unreadSchema = `
+ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN mentions TEXT;
+ALTER TABLE media_cache ADD COLUMN size INTEGER NOT NULL DEFAULT 0;
+UPDATE media_cache SET size=length(data);
+CREATE INDEX media_cache_used ON media_cache(created_at);
+PRAGMA user_version = 12;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -151,4 +199,7 @@ export const migrations = [
   inboxPinsSchema,
   groupAutomationSchema,
   lidPhonesSchema,
+  profilesSchema,
+  messageFeaturesSchema,
+  unreadSchema,
 ];

@@ -12,7 +12,7 @@ test("credential-store failure permits retry without deleting the WhatsApp sessi
       connection: () => {},
       chat: () => {},
       message: () => {},
-      receipt: () => {},
+      receipt: () => {}, reaction: () => {}, change: () => {},
       contacts: () => {},
       phones: () => {},
       error: () => {},

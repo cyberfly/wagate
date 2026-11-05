@@ -44,6 +44,32 @@ try {
   if (!ready) throw new Error("Compiled sidecar failed readiness");
   if ((await fetch(`http://127.0.0.1:${port}/v1/chats`)).status !== 401)
     throw new Error("Unauthenticated data access");
+  // A second profile gets its own database directory, answers on its own,
+  // and leaves nothing behind when removed. No WhatsApp connection is made.
+  const call = (path: string, method = "GET", body?: unknown) =>
+    fetch(`http://127.0.0.1:${port}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  const created = await call("/internal/profiles", "POST", { name: "Smoke" });
+  if (!created.ok) throw new Error("Profile creation failed");
+  const { id } = (await created.json()) as { id: string };
+  const profileDb = join(dir, "profiles", id, "wagate.sqlite");
+  if (!(await Bun.file(profileDb).exists()))
+    throw new Error("Profile database missing");
+  const scoped = (await (
+    await call(`/internal/snapshot?profile=${id}`)
+  ).json()) as { profile: { id: string }; profiles: unknown[] };
+  if (scoped.profile.id !== id || scoped.profiles.length !== 2)
+    throw new Error("Profile snapshot mismatch");
+  if (!(await call(`/internal/profiles/${id}`, "DELETE")).ok)
+    throw new Error("Profile removal failed");
+  if (await Bun.file(profileDb).exists())
+    throw new Error("Removed profile left its database");
   child.stdin.write("shutdown\n");
   child.stdin.flush();
   const code = await Promise.race([
@@ -54,7 +80,7 @@ try {
   ]);
   if (code !== 0) throw new Error(`Exit ${code}`);
   console.log(
-    "PASS: compiled sidecar starts outside project, SQLite connects, auth enforced, graceful shutdown exits 0.",
+    "PASS: compiled sidecar starts outside project, SQLite connects, auth enforced, profiles create and remove, graceful shutdown exits 0.",
   );
 } finally {
   child.kill();

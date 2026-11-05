@@ -1,6 +1,6 @@
 # Wagate
 
-A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus optional Cloudflare Tunnel publishing, CSV broadcasts, and scheduled AI group posts. Automatic chat replies, webhooks, MCP, multiple accounts, and media processing remain later milestones.
+A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus multiple WhatsApp numbers (profiles), optional Cloudflare Tunnel publishing, CSV broadcasts, and scheduled AI group posts. Automatic chat replies, webhooks, MCP, and media processing remain later milestones.
 
 ## Screenshots
 
@@ -69,6 +69,18 @@ Sidecar target mapping includes macOS arm64/x64, Windows x64, and Linux arm64/x6
 
 See [implementation status](docs/implementation-status.md) and [manual acceptance](docs/acceptance.md). Automated tests use a fake messaging provider and incur no AI charges.
 
+## Multiple WhatsApp numbers
+
+Wagate runs several WhatsApp numbers side by side, each in its own **profile**. Your existing number is the **Main** profile.
+
+1. Open the number switcher at the top of the sidebar and choose **Add WhatsApp number**, or use **WhatsApp → Your WhatsApp numbers → Add a number**. Give it a name, such as `Shop`.
+2. Wagate opens the new profile's connection page. **Connect WhatsApp**, then scan the QR code from that number's phone (**Linked Devices → Link a Device**).
+3. Switch numbers from the sidebar at any time. Every page — Inbox, Broadcast, Add to group, Group automation, WhatsApp — works with the number shown there. Each status dot shows whether that number is connected (green), waiting for a QR scan (amber), disconnected (grey), or needs attention (red).
+
+All profiles stay connected at once, so messages keep arriving for every number while you look at one of them. Each profile has its own chats, messages, contact names, Copilot drafts and per-chat AI mode, broadcasts and send logs, group imports, group automations, and WhatsApp session; nothing is shared or mixed between numbers. One broadcast and one group import can run per number at a time. AI Copilot settings and the OpenRouter key, API keys, and the Cloudflare tunnel are app-wide.
+
+Up to 10 numbers are supported. **Rename** works for every profile. **Remove** deletes a profile's chats, messages, broadcasts, automations and session from this computer; when the number is connected, Wagate also unlinks it from the phone, otherwise remove it from **Linked Devices** on the phone yourself. The Main profile cannot be removed: use **Reset session** to link a different number to it. If the same number is linked to two profiles, the second one shows a warning, since both would receive the same messages.
+
 ## REST API
 
 Create a scoped key in **API access**, and save its one-time value. Only a SHA-256 hash is stored. Revocation takes effect immediately. Tauri uses a separate random credential per launch; the browser UI never receives it.
@@ -77,12 +89,25 @@ Create a scoped key in **API access**, and save its one-time value. Only a SHA-2
 | -------------------------------------------------- | -------------------------------- |
 | `GET /health`                                      | None; minimal operational status |
 | `GET /v1/status`                                   | Any valid key                    |
+| `GET /v1/profiles`                                 | Any valid key                    |
 | `GET /v1/chats`                                    | `chats.read`                     |
 | `GET /v1/chats/:chatId/messages?limit=50&cursor=…` | `messages.read`                  |
 | `POST /v1/messages/send`                           | `messages.send`                  |
 | `GET /v1/events`                                   | `messages.read` and `chats.read` |
 
-Data endpoints require `Authorization: Bearer local_…`. Browser-origin requests are rejected. `/internal/*` is desktop-only: external keys cannot manage keys, pair WhatsApp, configure AI, or read credentials.
+Data endpoints require `Authorization: Bearer local_…`. Browser-origin requests are rejected.
+
+Every request works with one profile. Name it with an `X-Wagate-Profile: <profile id>` header or a `?profile=<profile id>` query parameter (handy for `EventSource`); naming two different profiles is a 400 error. Without either, a request uses the Main profile, or, for a key limited to exactly one profile, that profile. `GET /v1/profiles` lists the profiles a key can use, with each `id`, `name`, linked `account`, and connection `status`; `GET /v1/status` names the profile it describes. Profile IDs are also shown in **API access**. When creating a key, choose **All numbers** (including ones added later) or limit it to specific numbers. A limited key gets 403 for any other profile, whether or not it exists. Removing a profile takes it out of every key, and revokes keys that were limited to it alone. `/v1/events` streams events of the selected profile only.
+
+```sh
+curl http://127.0.0.1:8787/v1/messages/send \
+  -H "Authorization: Bearer $WAGATE_API_KEY" \
+  -H 'X-Wagate-Profile: p_5a1e5f0b7c2d' \
+  -H 'Content-Type: application/json' \
+  -d '{"to":"60123456789","text":"Hello from the shop number"}'
+```
+
+ `/internal/*` is desktop-only: external keys cannot manage keys, pair WhatsApp, configure AI, or read credentials.
 
 ```sh
 curl http://127.0.0.1:8787/v1/messages/send \
@@ -105,7 +130,7 @@ The gateway is loopback-only until you ask otherwise. **API access → Go public
 
 The tunnel does not point at `127.0.0.1:8787`. It gets a separate loopback listener carrying the public routes only, so `/internal/*` is not mounted on it at all and the desktop token is rejected there. Public `/health` returns `{"status":"ok"}` and nothing about your account. Failed key guesses on that listener are throttled to 20 per minute; valid keys are never throttled.
 
-At least one active API key is required before the tunnel starts — the address is otherwise useless. Anyone holding a key can read your chats and send messages from your number over that address, so publish only keys you can revoke, and revoke them when you are done.
+At least one active API key is required before the tunnel starts — the address is otherwise useless. Anyone holding a key can read your chats and send messages from the numbers it can use over that address, so publish only keys you can revoke, and revoke them when you are done.
 
 `cloudflared` runs the tunnel. Wagate uses, in order: `WAGATE_CLOUDFLARED` if set, its own copy in the app data directory, then a `cloudflared` on your `PATH`. If none is found, the panel offers a one-time download of the pinned release (`2026.8.3`, ~20 MB) from Cloudflare's official GitHub releases over HTTPS into a `0700` directory; there is no published checksum to verify beyond that transport. `brew install cloudflared` (or your package manager) works equally well and is picked up without a restart.
 
@@ -175,12 +200,13 @@ Only selected recent chat context goes to OpenRouter for chat replies: default 2
 
 Desktop data uses Tauri’s app-data directory, normally `~/Library/Application Support/com.wagate.desktop/` on macOS:
 
-- `wagate.sqlite`: chats, messages, contact names, settings, hashed API keys, drafts, broadcasts, encrypted secrets.
+- `wagate.sqlite`: the Main profile's chats, messages, contact names, drafts, broadcasts and WhatsApp session, plus app-wide settings, hashed API keys, the profile list, and the encrypted OpenRouter key.
+- `profiles/<profile id>/wagate.sqlite`: each further profile's own chats, messages, contact names, drafts, broadcasts, automations, settings and encrypted WhatsApp session. Removing a profile deletes its directory.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts), version 7 unlimited local inbox pin overrides, and version 8 group automation settings and posting history to existing databases. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts), version 7 unlimited local inbox pin overrides, version 8 group automation settings and posting history, version 9 LID phone numbers, and version 10 the profile list (with the existing data becoming the Main profile) and per-key profile limits to existing databases. Profile databases use the same schema. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
 
-WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere). There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
+WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere); every profile uses that one key, so adding numbers adds no credential-store prompts. There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 
 Message contents remain plaintext locally in SQLite; full-disk encryption is separate. Logs omit message text, keys, raw provider errors, and authentication objects. Direct console logging from transitive Signal dependencies is replaced with fixed metadata to prevent accidental session disclosure.
 

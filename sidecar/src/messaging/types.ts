@@ -21,6 +21,8 @@ export interface Chat {
   pinned: boolean;
   archived: boolean;
   lastMessage?: string | null;
+  /** Incoming messages not yet read here or on another device. */
+  unreadCount?: number;
 }
 export interface GroupInfo {
   id: string;
@@ -37,6 +39,8 @@ export interface ChatUpdate {
   /** When the chat was pinned, or null once unpinned. */
   pinnedAt?: number | null;
   archived?: boolean;
+  /** Unread messages; -1 when marked unread without a count. */
+  unreadCount?: number;
 }
 /** A person's LID and phone-number id, as WhatsApp revealed them. */
 export interface PhoneLink {
@@ -62,9 +66,111 @@ export interface Message {
   /** The sender's phone-number id, when known; group senders are often LIDs. */
   senderPhone?: string | null;
   direction: "incoming" | "outgoing";
-  type: "text" | "image" | "video" | "audio" | "document" | "unknown";
+  type: MessageType;
+  /** The text, a media caption, a document's file name, or a summary. */
   text?: string;
   timestamp: number;
+  /** What can be shown about an attachment before downloading it. */
+  media?: MessageMedia | null;
+  /**
+   * This device can download the attachment. Messages stored before
+   * attachments were kept lack it until WhatsApp sends them again.
+   */
+  mediaAvailable?: boolean;
+  /** The message this one replies to. */
+  quoted?: QuotedMessage | null;
+  /** How far one of our messages got. Unknown for most synced history. */
+  status?: MessageStatus | null;
+  /** Emoji people reacted with, most used first. */
+  reactions?: Reaction[];
+  /** When the sender last edited the text. */
+  editedAt?: number | null;
+  /** When the sender deleted it for everyone; its content is gone. */
+  deletedAt?: number | null;
+  /** Forwarded from another chat. */
+  forwarded?: boolean;
+  /** People @mentioned in the text, with the names this device knows. */
+  mentions?: Mention[];
+}
+export interface Mention {
+  /** WhatsApp id; the text names them as `@` and the id's number. */
+  id: string;
+  name?: string | null;
+}
+export type MessageType =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "document"
+  | "sticker"
+  | "location"
+  | "contact"
+  | "poll"
+  | "unknown";
+export type MessageStatus = "pending" | "sent" | "delivered" | "read" | "failed";
+export interface MessageMedia {
+  mimetype?: string;
+  fileName?: string;
+  /** Bytes. */
+  size?: number;
+  width?: number;
+  height?: number;
+  /** Length of a video or audio clip. */
+  seconds?: number;
+  /** A voice note rather than an audio file. */
+  ptt?: boolean;
+  /** A shared location. */
+  latitude?: number;
+  longitude?: number;
+}
+export interface QuotedMessage {
+  /** WhatsApp's id for the quoted message. */
+  providerMessageId: string;
+  /** Wagate's id, when the quoted message is stored on this device. */
+  messageId?: string | null;
+  senderId?: string | null;
+  senderName?: string | null;
+  /** Quoting one of our own messages. */
+  fromMe: boolean;
+  type: MessageType;
+  text?: string;
+}
+export interface Reaction {
+  emoji: string;
+  count: number;
+  /** Includes our own reaction. */
+  mine: boolean;
+}
+/** A reaction someone added, or removed with an empty emoji. */
+export interface ReactionUpdate {
+  /** WhatsApp's id for the message reacted to. */
+  providerMessageId: string;
+  /** "me" for our own reaction. */
+  senderId: string;
+  emoji: string;
+  timestamp: number;
+}
+/** A sender's change to a message already sent: a new text, or deletion. */
+export interface MessageChange {
+  providerMessageId: string;
+  kind: "edit" | "delete";
+  text?: string;
+  timestamp: number;
+}
+/**
+ * A message as the provider reports it. `mediaSource` lets the provider
+ * download the attachment later; it never leaves the sidecar.
+ */
+export interface ReceivedMessage extends Message {
+  mediaSource?: Uint8Array | null;
+}
+/** An attachment to send, decoded from base64. */
+export interface OutgoingMedia {
+  data: Uint8Array;
+  mimetype: string;
+  fileName?: string;
+  caption?: string;
 }
 /**
  * What WhatsApp said about one of our messages after it left the socket.

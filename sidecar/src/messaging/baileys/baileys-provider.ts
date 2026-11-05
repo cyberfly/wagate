@@ -1,20 +1,33 @@
 import { CredentialStoreError } from "../../security/vault-loader";
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   jidNormalizedUser,
+  proto,
+  type AnyMessageContent,
+  type WAMessage,
   type WASocket,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import QRCode from "qrcode";
-import type { MessagingProvider, ProviderEvents } from "../messaging-provider";
-import type { ConnectionState } from "../types";
+import type {
+  MessagingProvider,
+  ProviderEvents,
+  SendOptions,
+  StoredMessage,
+} from "../messaging-provider";
+import type { ConnectionState, OutgoingMedia } from "../types";
 import { Vault } from "../../security/vault";
 import { createAuth } from "./auth";
 import { addResults, groupInfo } from "./groups";
 import {
+  embeddedThumbnail,
+  historyReactions,
+  normalizeChange,
   normalizeChat,
   normalizeContacts,
   normalizeMessage,
+  normalizeReaction,
   normalizeReceipt,
   senderNames,
   keyLinks,
@@ -28,6 +41,7 @@ export class BaileysProvider implements MessagingProvider {
   private reconnect?: ReturnType<typeof setTimeout>;
   private qrExpiry?: ReturnType<typeof setTimeout>;
   private stopped = true;
+  private logger = pino({ level: "silent" });
   constructor(
     private getVault: () => Promise<Vault>,
     private events: ProviderEvents,
@@ -105,7 +119,7 @@ export class BaileysProvider implements MessagingProvider {
       const { state, saveCreds } = createAuth(vault);
       const socket = makeWASocket({
         auth: state,
-        logger: pino({ level: "silent" }),
+        logger: this.logger,
         markOnlineOnConnect: false,
         syncFullHistory: false,
         connectTimeoutMs: 30000,
@@ -216,10 +230,22 @@ export class BaileysProvider implements MessagingProvider {
         this.receiveNames(messages);
         for (const raw of messages) {
           try {
-            const message = normalizeMessage(raw, socket.user?.id);
+            const message = normalizeMessage(raw, this.self());
             if (message) this.events.message(message, type === "notify");
+            this.receiveReactions(raw);
           } catch {
             this.events.error("Could not store a WhatsApp message");
+          }
+        }
+      });
+      socket.ev.on("messages.reaction", (reactions) => {
+        if (!active()) return;
+        for (const r of reactions) {
+          try {
+            const reaction = normalizeReaction(r);
+            if (reaction) this.events.reaction(reaction);
+          } catch {
+            this.events.error("Could not store a reaction");
           }
         }
       });
@@ -231,6 +257,8 @@ export class BaileysProvider implements MessagingProvider {
           try {
             const receipt = normalizeReceipt(update);
             if (receipt) this.events.receipt(receipt);
+            const change = normalizeChange(update);
+            if (change) this.events.change(change);
           } catch {
             this.events.error("Could not record a message receipt");
           }
@@ -240,11 +268,12 @@ export class BaileysProvider implements MessagingProvider {
         if (!active()) return;
         this.receiveContacts(contacts);
         this.receiveNames(messages);
-        for (const chat of chats) this.receiveChat(chat);
+        for (const chat of chats) this.receiveChat(chat, true);
         for (const raw of messages) {
           try {
-            const message = normalizeMessage(raw, socket.user?.id);
+            const message = normalizeMessage(raw, this.self());
             if (message) this.events.message(message, false);
+            this.receiveReactions(raw);
           } catch {
             this.events.error("Could not store WhatsApp history");
           }
@@ -281,9 +310,9 @@ export class BaileysProvider implements MessagingProvider {
       }
     }
   }
-  private receiveChat(chat: Parameters<typeof normalizeChat>[0]) {
+  private receiveChat(chat: Parameters<typeof normalizeChat>[0], history = false) {
     try {
-      const update = normalizeChat(chat);
+      const update = normalizeChat(chat, history);
       if (update) this.events.chat(update);
     } catch {
       this.events.error("Could not store chat metadata");
@@ -357,14 +386,118 @@ export class BaileysProvider implements MessagingProvider {
       (await this.getVault()).clearPrefix("wa:");
     }
   }
-  async sendText(chatId: string, text: string) {
+  /** Our own account, by phone number and by LID, as quotes and reactions name it. */
+  private self() {
+    const user = this.socket?.user;
+    return { id: user?.id, lid: user?.lid ?? undefined };
+  }
+  private receiveReactions(raw: WAMessage) {
+    for (const reaction of historyReactions(raw)) this.events.reaction(reaction);
+  }
+  private connected() {
     const socket = this.socket;
     if (!socket || this.state.status !== "connected")
       throw new Error("WhatsApp is disconnected");
-    const raw = await socket.sendMessage(chatId, { text });
+    return socket;
+  }
+  /** The key WhatsApp knows a stored message by. */
+  private key(t: StoredMessage): proto.IMessageKey {
+    const group = t.chatId.endsWith("@g.us");
+    return {
+      remoteJid: t.chatId,
+      id: t.providerMessageId,
+      fromMe: t.direction === "outgoing",
+      ...(group && t.direction === "incoming" && t.senderId !== t.chatId
+        ? { participant: t.senderId }
+        : {}),
+    };
+  }
+  /** A stored message rebuilt well enough to quote or download. */
+  private rebuild(t: StoredMessage): WAMessage {
+    const key = this.key(t);
+    return {
+      key,
+      ...(key.participant ? { participant: key.participant } : {}),
+      message: t.mediaSource
+        ? proto.Message.decode(t.mediaSource)
+        : { conversation: t.text ?? "" },
+    };
+  }
+  private async send(chatId: string, content: AnyMessageContent, options?: SendOptions) {
+    const socket = this.connected();
+    const raw = await socket.sendMessage(
+      chatId,
+      content,
+      options?.quoted ? { quoted: this.rebuild(options.quoted) } : {},
+    );
     if (!raw) throw new Error("WhatsApp did not acknowledge the message");
-    const message = normalizeMessage(raw, socket.user?.id);
+    const message = normalizeMessage(raw, this.self());
     if (!message) throw new Error("WhatsApp returned an invalid message");
+    message.status = "sent";
     return message;
+  }
+  async sendText(chatId: string, text: string, options?: SendOptions) {
+    return this.send(chatId, { text }, options);
+  }
+  async sendMedia(chatId: string, media: OutgoingMedia, options?: SendOptions) {
+    const data = Buffer.from(media.data);
+    const { mimetype, caption } = media;
+    const fileName = media.fileName || "file";
+    let content: AnyMessageContent;
+    if (/^image\/(jpeg|png|webp)$/.test(mimetype))
+      content = { image: data, mimetype, ...(caption ? { caption } : {}) };
+    else if (mimetype === "video/mp4")
+      content = { video: data, mimetype, ...(caption ? { caption } : {}) };
+    else if (/^audio\//.test(mimetype)) content = { audio: data, mimetype };
+    else
+      content = {
+        document: data,
+        mimetype: mimetype || "application/octet-stream",
+        fileName,
+        ...(caption ? { caption } : {}),
+      };
+    return this.send(chatId, content, options);
+  }
+  async react(target: StoredMessage, emoji: string) {
+    const socket = this.connected();
+    await socket.sendMessage(target.chatId, {
+      react: { text: emoji, key: this.key(target) },
+    });
+  }
+  async markRead(targets: StoredMessage[]) {
+    if (!targets.length) return;
+    await this.connected().readMessages(targets.map((t) => this.key(t)));
+  }
+  async edit(target: StoredMessage, text: string) {
+    await this.connected().sendMessage(target.chatId, { text, edit: this.key(target) });
+  }
+  async revoke(target: StoredMessage) {
+    await this.connected().sendMessage(target.chatId, { delete: this.key(target) });
+  }
+  async forward(target: StoredMessage, chatId: string) {
+    return this.send(chatId, { forward: this.rebuild(target) });
+  }
+  thumbnail(target: StoredMessage) {
+    return embeddedThumbnail(target.mediaSource);
+  }
+  async downloadMedia(target: StoredMessage) {
+    if (!target.mediaSource) throw new Error("Media is unavailable for this message");
+    const socket = this.socket;
+    const buffer = await downloadMediaMessage(
+      this.rebuild(target),
+      "buffer",
+      {},
+      {
+        logger: this.logger,
+        // Media older than a few weeks leaves WhatsApp's servers; the sender's
+        // phone can upload it again while this number is connected.
+        reuploadRequest: (message) => {
+          if (!socket || this.state.status !== "connected")
+            throw new Error("Media expired. Connect WhatsApp to fetch it again.");
+          return socket.updateMediaMessage(message);
+        },
+      },
+    );
+    return new Uint8Array(buffer);
   }
 }

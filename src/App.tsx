@@ -1,6 +1,14 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useGateway } from "./hooks/use-gateway";
-import { statusLabel } from "./lib/api";
+import {
+  defaultProfile,
+  getActiveProfile,
+  setActiveProfile,
+  statusLabel,
+  type Profile,
+} from "./lib/api";
+import { ProfileSwitcher } from "./components/ProfileSwitcher";
+import { Profiles } from "./components/Profiles";
 import { Connection } from "./components/Connection";
 import { Inbox } from "./components/Inbox";
 import { Settings } from "./components/Settings";
@@ -54,11 +62,43 @@ const pages = {
 };
 export default function App() {
   const [page, setPage] = useState<keyof typeof pages>("inbox"),
+    [profileId, setProfileId] = useState(getActiveProfile),
     [selected, setSelected] = useState<string | null>(null),
     [sidebarMinimized, setSidebarMinimized] = useState(false),
     [busy, setBusy] = useState(false),
-    [notice, setNotice] = useState("");
-  const { snapshot, error, refresh } = useGateway(selected);
+    [notice, setNotice] = useState(""),
+    [messageLimit, setMessageLimit] = useState(50),
+    [info, setInfo] = useState("");
+  // Confirmations (saved, forwarded, copied) fade on their own.
+  useEffect(() => {
+    if (!info) return;
+    const timer = setTimeout(() => setInfo(""), 4000);
+    return () => clearTimeout(timer);
+  }, [info]);
+  const { snapshot, error, refresh } = useGateway(profileId, selected, messageLimit);
+  // Each chat opens on its latest messages.
+  useEffect(() => setMessageLimit(50), [selected, profileId]);
+  // Switching numbers starts fresh: no open chat, no notice from the last one.
+  const selectProfile = useCallback((id: string) => {
+    setActiveProfile(id);
+    setProfileId(id);
+    setSelected(null);
+    setNotice("");
+  }, []);
+  const profileCreated = useCallback(
+    (profile: Profile) => {
+      selectProfile(profile.id);
+      setPage("connection");
+    },
+    [selectProfile],
+  );
+  // A remembered profile that was removed falls back to the main one.
+  useEffect(() => {
+    if (profileId !== defaultProfile && error.includes("Profile not found"))
+      selectProfile(defaultProfile);
+  }, [error, profileId, selectProfile]);
+  const profiles = snapshot?.profiles || [];
+  const profile = snapshot?.profile;
   const act = useCallback(
     async (fn: () => Promise<unknown>) => {
       setBusy(true);
@@ -108,6 +148,14 @@ export default function App() {
         >
           <span aria-hidden="true">{sidebarMinimized ? "›" : "‹"}</span>
         </button>
+        <ProfileSwitcher
+          profiles={profiles}
+          active={profile}
+          busy={busy}
+          select={selectProfile}
+          created={profileCreated}
+          manage={() => setPage("connection")}
+        />
         <div className="workspace-label">WORKSPACE</div>
         <nav>
           {Object.entries(pages).map(([key, item]) => (
@@ -149,7 +197,7 @@ export default function App() {
             <br />
             Under your control.
           </p>
-          <small>Wagate v0.1.0</small>
+          <small>Wagate v0.2.0</small>
         </div>
       </aside>
       <main>
@@ -167,7 +215,8 @@ export default function App() {
               >
                 <span className="dot" />
                 {snapshot
-                  ? statusLabel[snapshot.connection.status]
+                  ? (profiles.length > 1 && profile ? profile.name + " · " : "") +
+                    statusLabel[snapshot.connection.status]
                   : "Gateway starting"}
               </button>
             </header>
@@ -216,6 +265,11 @@ export default function App() {
             )}
           </div>
         ) : null}
+        {info ? (
+          <div className="info-toast" role="status">
+            {info}
+          </div>
+        ) : null}
         {snapshot?.alerts.at(-1) ? (
           <div className="alert warning" role="status">
             {snapshot.alerts.at(-1)?.error}
@@ -226,13 +280,36 @@ export default function App() {
             UI preview · Fictional sample data · No WhatsApp or AI requests
           </div>
         ) : null}
-        <div className="page-content">
+        {/* Keyed by profile, so no form or selection carries over to another number. */}
+        <div className="page-content" key={profileId}>
           {page === "connection" ? (
-            <Connection state={snapshot?.connection} busy={busy} act={act} />
+            <>
+              <Connection
+                state={snapshot?.connection}
+                profile={profile}
+                busy={busy}
+                act={act}
+              />
+              {snapshot ? (
+                <Profiles
+                  profiles={profiles}
+                  active={profileId}
+                  busy={busy}
+                  act={act}
+                  select={selectProfile}
+                  created={profileCreated}
+                />
+              ) : null}
+            </>
           ) : page === "settings" ? (
             <Settings busy={busy} act={act} />
           ) : page === "api" ? (
-            <ApiAccess busy={busy} act={act} tunnel={snapshot?.tunnel} />
+            <ApiAccess
+              busy={busy}
+              act={act}
+              tunnel={snapshot?.tunnel}
+              profiles={profiles}
+            />
           ) : page === "automation" ? (
             <GroupAutomation
               configurations={snapshot?.automations || []}
@@ -268,6 +345,9 @@ export default function App() {
               }
               selected={selected}
               select={setSelected}
+              hasMore={!!snapshot?.hasMoreMessages}
+              loadOlder={() => setMessageLimit((n) => Math.min(500, n + 50))}
+              notify={(text, kind = "info") => (kind === "error" ? setNotice(text) : setInfo(text))}
               connected={connected && !error}
               processing={
                 !!selected && !!snapshot?.processing.includes(selected)
