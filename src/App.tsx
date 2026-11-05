@@ -197,7 +197,7 @@ export default function App() {
             <br />
             Under your control.
           </p>
-          <small>Wagate v0.1.0</small>
+          <small>Wagate v0.2.0</small>
         </div>
       </aside>
       <main>

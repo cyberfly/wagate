@@ -656,7 +656,7 @@ export async function previewRequest(
       health: {
         status: "ok",
         database: "connected",
-        version: "0.1.1",
+        version: "0.2.0",
         ai: config.hasKey ? "configured" : "not_configured",
       },
       profile: profileSummary(currentProfile),

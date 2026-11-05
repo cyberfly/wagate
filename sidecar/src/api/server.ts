@@ -142,7 +142,7 @@ export function createApi(s: Services) {
             database: s.databaseHealthy() ? "connected" : "error",
             whatsapp: s.profiles.main().provider.getConnectionState().status,
             profiles: s.profiles.list().length,
-            version: "0.1.1",
+            version: "0.2.0",
           },
     ),
   );
@@ -190,7 +190,7 @@ export function createApi(s: Services) {
       whatsapp: p.provider.getConnectionState().status,
       database: p.databaseHealthy() ? "connected" : "error",
       profile: { id, name, account },
-      version: "0.1.1",
+      version: "0.2.0",
     });
   });
   // Any valid key may list the numbers it can use, to pick one per request.
@@ -336,7 +336,7 @@ export function createApi(s: Services) {
           status: s.databaseHealthy() && p.databaseHealthy() ? "ok" : "error",
           database:
             s.databaseHealthy() && p.databaseHealthy() ? "connected" : "error",
-          version: "0.1.1",
+          version: "0.2.0",
           ai:
             s.settings.get("ai.configured") === "true"
               ? "configured"
