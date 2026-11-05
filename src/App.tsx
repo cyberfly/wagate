@@ -67,7 +67,14 @@ export default function App() {
     [sidebarMinimized, setSidebarMinimized] = useState(false),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState(""),
-    [messageLimit, setMessageLimit] = useState(50);
+    [messageLimit, setMessageLimit] = useState(50),
+    [info, setInfo] = useState("");
+  // Confirmations (saved, forwarded, copied) fade on their own.
+  useEffect(() => {
+    if (!info) return;
+    const timer = setTimeout(() => setInfo(""), 4000);
+    return () => clearTimeout(timer);
+  }, [info]);
   const { snapshot, error, refresh } = useGateway(profileId, selected, messageLimit);
   // Each chat opens on its latest messages.
   useEffect(() => setMessageLimit(50), [selected, profileId]);
@@ -258,6 +265,11 @@ export default function App() {
             )}
           </div>
         ) : null}
+        {info ? (
+          <div className="info-toast" role="status">
+            {info}
+          </div>
+        ) : null}
         {snapshot?.alerts.at(-1) ? (
           <div className="alert warning" role="status">
             {snapshot.alerts.at(-1)?.error}
@@ -335,7 +347,7 @@ export default function App() {
               select={setSelected}
               hasMore={!!snapshot?.hasMoreMessages}
               loadOlder={() => setMessageLimit((n) => Math.min(500, n + 50))}
-              notify={setNotice}
+              notify={(text, kind = "info") => (kind === "error" ? setNotice(text) : setInfo(text))}
               connected={connected && !error}
               processing={
                 !!selected && !!snapshot?.processing.includes(selected)

@@ -175,6 +175,19 @@ CREATE TABLE media_cache (
 );
 PRAGMA user_version = 11;
 `;
+// Unread counts follow WhatsApp: set by history sync, raised by live
+// incoming messages, cleared when read here, on the phone, or by replying.
+// Messages remember whether they were forwarded and whom they mention.
+// Every existing chat starts read.
+export const unreadSchema = `
+ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN mentions TEXT;
+ALTER TABLE media_cache ADD COLUMN size INTEGER NOT NULL DEFAULT 0;
+UPDATE media_cache SET size=length(data);
+CREATE INDEX media_cache_used ON media_cache(created_at);
+PRAGMA user_version = 12;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -188,4 +201,5 @@ export const migrations = [
   lidPhonesSchema,
   profilesSchema,
   messageFeaturesSchema,
+  unreadSchema,
 ];

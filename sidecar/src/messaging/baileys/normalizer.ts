@@ -47,7 +47,8 @@ export function normalizeChat(chat: {
   lastMessageRecvTimestamp?: unknown;
   pinned?: unknown;
   archived?: boolean | null;
-}): ChatUpdate | null {
+  unreadCount?: number | null;
+}, history = false): ChatUpdate | null {
   if (!chat.id || !/@(s\.whatsapp\.net|lid|g\.us)$/.test(chat.id)) return null;
   const times = [
     chat.conversationTimestamp,
@@ -64,6 +65,13 @@ export function normalizeChat(chat: {
   if (times.length) update.lastMessageAt = Math.max(...times);
   if (chat.pinned !== undefined) update.pinnedAt = millis(chat.pinned) ?? null;
   if (typeof chat.archived === "boolean") update.archived = chat.archived;
+  // History sync states the count. Later updates add one per live message,
+  // which Wagate counts itself; only "read" (0) and "marked unread" (-1),
+  // from this account's other devices, are taken from them.
+  const unread = chat.unreadCount;
+  if (typeof unread === "number")
+    if (history) update.unreadCount = Math.max(0, unread);
+    else if (unread === 0 || unread === -1) update.unreadCount = unread;
   return update;
 }
 /**
@@ -416,6 +424,10 @@ export function normalizeMessage(
     message.mediaSource = mediaSource(content, described.field);
   const reply = content ? quoted(content, self) : null;
   if (reply) message.quoted = reply;
+  const info = content ? contextInfo(content) : undefined;
+  if (info?.isForwarded || (info?.forwardingScore ?? 0) > 0) message.forwarded = true;
+  const mentioned = [...new Set((info?.mentionedJid ?? []).filter(Boolean).map((j) => jidNormalizedUser(j)))];
+  if (mentioned.length) message.mentions = mentioned.slice(0, 50).map((id) => ({ id }));
   if (raw.key.fromMe && typeof raw.status === "number") {
     const status = statuses[raw.status];
     if (status) message.status = status;

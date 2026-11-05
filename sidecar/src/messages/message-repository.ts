@@ -17,7 +17,7 @@ import { ChatRepository } from "../chats/chat-repository";
 const columns = `m.id,m.provider,m.provider_message_id AS providerMessageId,m.chat_id AS chatId,m.sender_id AS senderId,
  COALESCE(p.name,k.name,k.push_name,p.push_name) AS senderName,
  CASE WHEN m.sender_id LIKE '%@s.whatsapp.net' THEN m.sender_id ELSE l.phone END AS senderPhone,
- m.direction,m.type,m.text,m.timestamp,m.media,m.quoted,m.status,m.edited_at AS editedAt,m.deleted_at AS deletedAt,
+ m.direction,m.type,m.text,m.timestamp,m.media,m.quoted,m.status,m.edited_at AS editedAt,m.deleted_at AS deletedAt,m.forwarded,m.mentions,
  m.media_source IS NOT NULL AS mediaAvailable`;
 const from = `messages m LEFT JOIN contacts k ON k.id=m.sender_id
  LEFT JOIN lid_phones l ON l.lid=m.sender_id LEFT JOIN contacts p ON p.id=l.phone`;
@@ -29,7 +29,9 @@ const rank: Record<MessageStatus, number> = {
   read: 3,
   failed: 4,
 };
-type Row = Omit<Message, "media" | "quoted" | "mediaAvailable"> & {
+type Row = Omit<Message, "media" | "quoted" | "mediaAvailable" | "forwarded" | "mentions"> & {
+  forwarded: number;
+  mentions: string | null;
   media: string | null;
   quoted: string | null;
   mediaAvailable: number;
@@ -45,7 +47,7 @@ function parse<T>(json: string | null): T | null {
 export class MessageRepository {
   constructor(
     private db: Database,
-    private chats: ChatRepository,
+    readonly chats: ChatRepository,
   ) {}
   save(message: ReceivedMessage) {
     return this.db.transaction(() => {
@@ -58,12 +60,15 @@ export class MessageRepository {
       });
       const media = message.media ? JSON.stringify(message.media) : null,
         source = message.mediaSource ?? null,
-        quoted = message.quoted ? JSON.stringify(message.quoted) : null;
+        quoted = message.quoted ? JSON.stringify(message.quoted) : null,
+        mentions = message.mentions?.length
+          ? JSON.stringify(message.mentions.map((m) => m.id))
+          : null;
       const inserted =
         this.db
           .query(
-            `INSERT OR IGNORE INTO messages(id,provider,provider_message_id,chat_id,sender_id,direction,type,text,timestamp,created_at,media,media_source,quoted,status,deleted_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT OR IGNORE INTO messages(id,provider,provider_message_id,chat_id,sender_id,direction,type,text,timestamp,created_at,media,media_source,quoted,status,deleted_at,forwarded,mentions)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             message.id,
@@ -81,6 +86,8 @@ export class MessageRepository {
             quoted,
             message.status ?? null,
             message.deletedAt ?? null,
+            message.forwarded ? 1 : 0,
+            mentions,
           ).changes > 0;
       if (!inserted) {
         // Group history was once stored without its sender, which then read as
@@ -96,9 +103,10 @@ export class MessageRepository {
         this.db
           .query(
             `UPDATE messages SET media=COALESCE(media,?),media_source=COALESCE(media_source,?),quoted=COALESCE(quoted,?),
+             mentions=COALESCE(mentions,?),forwarded=MAX(forwarded,?),
              type=CASE WHEN type='unknown' THEN ? ELSE type END,text=COALESCE(text,?) WHERE id=? AND deleted_at IS NULL`,
           )
-          .run(media, source, quoted, message.type, message.text ?? null, message.id);
+          .run(media, source, quoted, mentions, message.forwarded ? 1 : 0, message.type, message.text ?? null, message.id);
         if (message.status) this.setStatus(message.providerMessageId, message.status);
       }
       return inserted;
@@ -187,18 +195,52 @@ export class MessageRepository {
       mimetype: parse<{ mimetype?: string }>(media)?.mimetype,
     };
   }
+  /** A cached attachment; reading it keeps it from being evicted soon. */
   cachedMedia(id: string) {
     const row = this.db
       .query(`SELECT mimetype,data FROM media_cache WHERE message_id=?`)
       .get(id) as { mimetype: string; data: Uint8Array } | null;
-    return row ? { mimetype: row.mimetype, data: new Uint8Array(row.data) } : null;
+    if (!row) return null;
+    this.db.query(`UPDATE media_cache SET created_at=? WHERE message_id=?`).run(Date.now(), id);
+    return { mimetype: row.mimetype, data: new Uint8Array(row.data) };
   }
-  cacheMedia(id: string, mimetype: string, data: Uint8Array) {
-    this.db
-      .query(
-        `INSERT OR REPLACE INTO media_cache(message_id,mimetype,data,created_at) VALUES(?,?,?,?)`,
-      )
-      .run(id, mimetype, data, Date.now());
+  /**
+   * Caches a downloaded attachment, then drops the least recently used ones
+   * beyond `limit` bytes. They can be downloaded again while WhatsApp keeps them.
+   */
+  cacheMedia(id: string, mimetype: string, data: Uint8Array, limit = 512 * 1024 * 1024) {
+    this.db.transaction(() => {
+      this.db
+        .query(
+          `INSERT OR REPLACE INTO media_cache(message_id,mimetype,data,created_at,size) VALUES(?,?,?,?,?)`,
+        )
+        .run(id, mimetype, data, Date.now(), data.length);
+      this.db
+        .query(
+          `DELETE FROM media_cache WHERE message_id IN (
+             SELECT message_id FROM (SELECT message_id,SUM(size) OVER (ORDER BY created_at DESC,message_id DESC) AS used FROM media_cache)
+             WHERE used>?)`,
+        )
+        .run(limit);
+    })();
+  }
+  /** Deletes a message from this device only ("delete for me"). */
+  remove(id: string) {
+    return this.db.transaction(() => {
+      this.db.query(`DELETE FROM media_cache WHERE message_id=?`).run(id);
+      return this.db.query(`DELETE FROM messages WHERE id=?`).run(id).changes > 0;
+    })();
+  }
+  /** The latest incoming messages of a chat, to send read receipts for. */
+  latestIncoming(chatId: string, count: number) {
+    return (
+      this.db
+        .query(
+          `SELECT id FROM messages WHERE chat_id=? AND direction='incoming' AND deleted_at IS NULL
+           ORDER BY timestamp DESC,id DESC LIMIT ?`,
+        )
+        .all(chatId, count) as { id: string }[]
+    ).map((r) => this.source(r.id)!);
   }
   /**
    * The chat's newest message when its latest page needs a fresh copy from
@@ -262,8 +304,14 @@ export class MessageRepository {
        LEFT JOIN contacts k ON k.id=s.id LEFT JOIN lid_phones l ON l.lid=s.id LEFT JOIN contacts p ON p.id=l.phone`,
     );
     return rows.map((row) => {
+      const ids = parse<string[]>(row.mentions);
       const message: Message = {
         ...row,
+        forwarded: !!row.forwarded,
+        mentions: ids?.map((id) => ({
+          id,
+          name: (nameLookup.get(id) as { name: string | null } | null)?.name ?? null,
+        })),
         media: parse(row.media),
         mediaAvailable: !!row.mediaAvailable,
         quoted: null,

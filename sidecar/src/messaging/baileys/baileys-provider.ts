@@ -268,7 +268,7 @@ export class BaileysProvider implements MessagingProvider {
         if (!active()) return;
         this.receiveContacts(contacts);
         this.receiveNames(messages);
-        for (const chat of chats) this.receiveChat(chat);
+        for (const chat of chats) this.receiveChat(chat, true);
         for (const raw of messages) {
           try {
             const message = normalizeMessage(raw, this.self());
@@ -310,9 +310,9 @@ export class BaileysProvider implements MessagingProvider {
       }
     }
   }
-  private receiveChat(chat: Parameters<typeof normalizeChat>[0]) {
+  private receiveChat(chat: Parameters<typeof normalizeChat>[0], history = false) {
     try {
-      const update = normalizeChat(chat);
+      const update = normalizeChat(chat, history);
       if (update) this.events.chat(update);
     } catch {
       this.events.error("Could not store chat metadata");
@@ -463,6 +463,19 @@ export class BaileysProvider implements MessagingProvider {
     await socket.sendMessage(target.chatId, {
       react: { text: emoji, key: this.key(target) },
     });
+  }
+  async markRead(targets: StoredMessage[]) {
+    if (!targets.length) return;
+    await this.connected().readMessages(targets.map((t) => this.key(t)));
+  }
+  async edit(target: StoredMessage, text: string) {
+    await this.connected().sendMessage(target.chatId, { text, edit: this.key(target) });
+  }
+  async revoke(target: StoredMessage) {
+    await this.connected().sendMessage(target.chatId, { delete: this.key(target) });
+  }
+  async forward(target: StoredMessage, chatId: string) {
+    return this.send(chatId, { forward: this.rebuild(target) });
   }
   thumbnail(target: StoredMessage) {
     return embeddedThumbnail(target.mediaSource);

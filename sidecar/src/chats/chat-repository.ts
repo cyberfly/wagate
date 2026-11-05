@@ -4,7 +4,7 @@ import type { Chat, ChatUpdate } from "../messaging/types";
 // a name from history sync), so contact names fill in for direct chats.
 const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name,c.id) AS name,
  c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode,
- COALESCE(c.inbox_pinned,c.pinned_at IS NOT NULL) AS pinned,c.archived<>0 AS archived,
+ COALESCE(c.inbox_pinned,c.pinned_at IS NOT NULL) AS pinned,c.archived<>0 AS archived,c.unread_count AS unreadCount,
  (SELECT CASE WHEN m.deleted_at IS NOT NULL THEN '🚫 This message was deleted'
    WHEN m.type='text' THEN m.text
    ELSE CASE m.type WHEN 'image' THEN '📷 ' WHEN 'video' THEN '🎥 ' WHEN 'audio' THEN '🎤 ' WHEN 'document' THEN '📄 '
@@ -66,6 +66,12 @@ export class ChatRepository {
         this.db
           .query("UPDATE chats SET archived=? WHERE id=?")
           .run(update.archived ? 1 : 0, update.id);
+      if (update.unreadCount !== undefined)
+        this.db
+          .query(
+            `UPDATE chats SET unread_count=CASE WHEN ?1<0 THEN MAX(unread_count,1) ELSE ?1 END WHERE id=?2`,
+          )
+          .run(update.unreadCount, update.id);
       return true;
     })();
   }
@@ -90,6 +96,18 @@ export class ChatRepository {
         )
         .all() as Row[]
     ).map((row) => toChat(row)!);
+  }
+  /** One more unread message, from a live incoming message. */
+  addUnread(id: string) {
+    this.db.query("UPDATE chats SET unread_count=unread_count+1 WHERE id=?").run(id);
+  }
+  /** Marks the chat read; returns how many messages were unread. */
+  clearUnread(id: string) {
+    const row = this.db
+      .query("SELECT unread_count AS n FROM chats WHERE id=?")
+      .get(id) as { n: number } | null;
+    if (row?.n) this.db.query("UPDATE chats SET unread_count=0 WHERE id=?").run(id);
+    return row?.n ?? 0;
   }
   setMode(id: string, mode: Chat["aiMode"]) {
     this.db.query("UPDATE chats SET ai_mode=? WHERE id=?").run(mode, id);

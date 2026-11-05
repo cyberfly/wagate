@@ -65,6 +65,11 @@ export class MessageService {
   ) {}
   receive(message: ReceivedMessage, live: boolean) {
     const inserted = this.repository.save(message);
+    // A live incoming message is unread; replying, here or on the phone,
+    // reads the chat as WhatsApp does.
+    if (inserted && live && !message.deletedAt)
+      if (message.direction === "incoming") this.repository.chats.addUnread(message.chatId);
+      else this.repository.chats.clearUnread(message.chatId);
     if (inserted) {
       this.events.publish(
         live && message.direction === "incoming"
@@ -109,6 +114,7 @@ export class MessageService {
   }
   private sent(message: ReceivedMessage) {
     this.repository.save(message);
+    this.repository.chats.clearUnread(message.chatId);
     const shown = this.repository.get(message.id) ?? visible(message);
     this.events.publish("message.sent", shown);
     this.events.publish("chat.updated", { id: message.chatId });
@@ -209,5 +215,74 @@ export class MessageService {
     if (!path)
       throw new Error("Media could not be saved. Check that your Downloads folder is writable.");
     return { path };
+  }
+  /**
+   * Marks a chat read: clears its unread count and sends read receipts for
+   * the messages that were unread, when connected.
+   */
+  async markRead(chatId: string) {
+    chatId = resolveChatId(chatId);
+    const unread = this.repository.chats.clearUnread(chatId);
+    if (!unread) return { read: 0 };
+    this.events.publish("chat.updated", { id: chatId });
+    if (this.provider.getConnectionState().status === "connected")
+      await this.provider
+        .markRead(this.repository.latestIncoming(chatId, Math.min(unread, 100)))
+        .catch(() => {});
+    return { read: unread };
+  }
+  /** One of our own messages, checked for an action WhatsApp allows for a limited time. */
+  private own(messageId: string, action: string, window: number) {
+    const target = this.repository.source(messageId);
+    if (!target) throw new Error("Invalid message");
+    if (target.direction !== "outgoing")
+      throw new Error(`Invalid message: you can only ${action} your own messages`);
+    if (target.deletedAt) throw new Error("Invalid message: it was deleted");
+    const sent = this.repository.get(messageId)!.timestamp;
+    if (Date.now() - sent > window)
+      throw new Error(`Invalid message: it is too old to ${action}`);
+    this.ready(target.chatId);
+    return target;
+  }
+  /** Edits one of our text messages; WhatsApp allows this for 15 minutes. */
+  async edit(messageId: string, text: string) {
+    text = text.trim();
+    if (!text || text.length > 10000)
+      throw new Error("Text must contain 1–10,000 characters");
+    const target = this.own(messageId, "edit", 15 * 60_000);
+    if (target.type !== "text") throw new Error("Invalid message: only text messages can be edited");
+    await this.provider.edit(target, text);
+    this.change({ providerMessageId: target.providerMessageId, kind: "edit", text, timestamp: Date.now() });
+    return this.repository.get(messageId);
+  }
+  /** Deletes our message for everyone; WhatsApp allows this for about two days. */
+  async deleteForEveryone(messageId: string) {
+    const target = this.own(messageId, "delete for everyone", 60 * 3600_000);
+    await this.provider.revoke(target);
+    this.change({ providerMessageId: target.providerMessageId, kind: "delete", timestamp: Date.now() });
+    return this.repository.get(messageId);
+  }
+  /** Removes a message from this device only. */
+  deleteForMe(messageId: string) {
+    const target = this.repository.source(messageId);
+    if (!target || !this.repository.remove(messageId)) throw new Error("Invalid message");
+    this.events.publish("message.removed", { id: messageId, chatId: target.chatId });
+    this.events.publish("chat.updated", { id: target.chatId });
+    return { success: true };
+  }
+  /** Forwards a message to up to five chats, as WhatsApp allows. */
+  async forward(messageId: string, chatIds: string[]) {
+    const ids = [...new Set(chatIds.map((id) => resolveChatId(id)))];
+    if (!ids.length || ids.length > 5) throw new Error("Invalid forward: choose 1–5 chats");
+    const target = this.repository.source(messageId);
+    if (!target || target.deletedAt) throw new Error("Invalid message");
+    const media = ["image", "video", "audio", "document", "sticker"].includes(target.type);
+    if (media ? !target.mediaSource : target.type !== "text")
+      throw new Error("Invalid forward: this message can’t be forwarded from Wagate. Forward it on your phone.");
+    if (this.provider.getConnectionState().status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    const sent: Message[] = [];
+    for (const chatId of ids) sent.push(this.sent(await this.provider.forward(target, chatId)));
+    return { messages: sent };
   }
 }

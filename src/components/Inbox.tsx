@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AddMember } from "./AddMember";
+import { EmojiPicker } from "./EmojiPicker";
 import {
   AttachIcon,
   DownloadIcon,
+  deleteWindow,
   MessageBubble,
   senderLabel,
   summary,
@@ -30,7 +32,7 @@ interface Props {
   hasMore: boolean;
   loadOlder: () => void;
   /** Shows a message in the app's notice bar. */
-  notify: (text: string) => void;
+  notify: (text: string, kind?: "info" | "error") => void;
   connect: () => void;
   connected: boolean;
   processing: boolean;
@@ -50,7 +52,7 @@ export function Inbox(p: Props) {
     [recipient, setRecipient] = useState(""),
     [newChat, setNewChat] = useState(false),
     [draftText, setDraftText] = useState(""),
-    [filter, setFilter] = useState<"All" | "Pinned" | "Groups" | "Archived">("All");
+    [filter, setFilter] = useState<"All" | "Unread" | "Pinned" | "Groups" | "Archived">("All");
   const bottom = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const nearBottom = useRef(true);
@@ -66,7 +68,11 @@ export function Inbox(p: Props) {
     [viewer, setViewer] = useState<{ message: Message; media: LoadedMedia } | null>(null),
     [highlight, setHighlight] = useState<string | null>(null),
     [dragging, setDragging] = useState(false),
-    [askedPhone, setAskedPhone] = useState(false);
+    [askedPhone, setAskedPhone] = useState(false),
+    [editing, setEditing] = useState<{ message: Message; stash: string } | null>(null),
+    [forwarding, setForwarding] = useState<Message | null>(null),
+    [removing, setRemoving] = useState<Message | null>(null),
+    [emoji, setEmoji] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   /** In a direct chat every incoming message is from the chat's person. */
   const peer = chat?.type === "direct" ? chatTitle(chat) : undefined;
@@ -79,25 +85,65 @@ export function Inbox(p: Props) {
     setAttachment(null);
     setViewer(null);
     setAskedPhone(false);
+    setEditing(null);
+    setForwarding(null);
+    setRemoving(null);
+    setEmoji(false);
   }, [p.selected]);
+  // An open chat is read while this window has focus, as on WhatsApp Web:
+  // its unread count clears and the senders get read receipts.
+  const reading = useRef(false);
+  const unread = chat?.unreadCount ?? 0;
+  useEffect(() => {
+    if (!p.selected || !unread) return;
+    const id = p.selected;
+    const read = () => {
+      if (reading.current || !document.hasFocus()) return;
+      reading.current = true;
+      void request(`/internal/chats/${encodeURIComponent(id)}/read`, "POST")
+        .catch(() => {})
+        .finally(() => (reading.current = false));
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => window.removeEventListener("focus", read);
+  }, [p.selected, unread]);
+  const cancelEdit = () => {
+    if (editing) setText(editing.stash);
+    setEditing(null);
+  };
+  /** Puts text at the composer's cursor, such as a picked emoji. */
+  const insert = (value: string) => {
+    const input = composer.current;
+    const start = input?.selectionStart ?? text.length,
+      end = input?.selectionEnd ?? text.length;
+    setText(text.slice(0, start) + value + text.slice(end));
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(start + value.length, start + value.length);
+    });
+  };
   useEffect(() => () => {
     if (attachment) URL.revokeObjectURL(attachment.url);
   }, [attachment]);
   useEffect(() => {
-    if (!viewer && !replyTo && !attachment) return;
+    if (!viewer && !replyTo && !attachment && !editing && !forwarding && !removing) return;
     const close = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (viewer) setViewer(null);
+      else if (forwarding) setForwarding(null);
+      else if (removing) setRemoving(null);
+      else if (editing) cancelEdit();
       else if (attachment) setAttachment(null);
       else setReplyTo(null);
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [viewer, replyTo, attachment]);
+  });
   const attach = (file: File | null | undefined) => {
     if (!file) return;
     if (file.size > 16 * 1024 * 1024) {
-      p.notify("Files can be up to 16 MB.");
+      p.notify("Files can be up to 16 MB.", "error");
       return;
     }
     setAttachment({ file, url: URL.createObjectURL(file) });
@@ -113,6 +159,20 @@ export function Inbox(p: Props) {
         request(`/v1/messages/${encodeURIComponent(m.id)}/react`, "POST", { emoji }),
       ),
     open: (message, media) => setViewer({ message, media }),
+    forward: (m) => setForwarding(m),
+    remove: (m) => setRemoving(m),
+    copy: (m) => {
+      void navigator.clipboard
+        .writeText(m.text || "")
+        .then(() => p.notify("Copied"), () => p.notify("Couldn’t copy the text", "error"));
+    },
+    edit: (m) => {
+      setReplyTo(null);
+      setAttachment(null);
+      setEditing({ message: m, stash: editing ? editing.stash : text });
+      setText(m.text || "");
+      requestAnimationFrame(() => composer.current?.focus());
+    },
     save: (m) =>
       void p.act(async () => {
         const { path } = await request<{ path: string }>(
@@ -188,9 +248,11 @@ export function Inbox(p: Props) {
   // The sidecar orders effective inbox pins first, then by activity.
   const query = search.trim().toLowerCase();
   const pinnedCount = p.chats.filter((c) => c.pinned).length;
+  const unreadChats = p.chats.filter((c) => !c.archived && c.unreadCount).length;
   const found = p.chats.filter((c) => {
     if (!(chatTitle(c) + c.id).toLowerCase().includes(query)) return false;
     if (filter === "Pinned") return c.pinned;
+    if (filter === "Unread") return !c.archived && !!c.unreadCount;
     if (filter === "Archived") return c.archived;
     if (c.archived) return false;
     return filter !== "Groups" || c.type === "group";
@@ -199,7 +261,7 @@ export function Inbox(p: Props) {
     "/internal/chats/" + encodeURIComponent(c.id) + "/pin", "PUT", { pinned: !c.pinned },
   ));
   const item = (c: Chat) => (
-    <div key={c.id} className={"chat-row " + (c.id === p.selected ? "selected" : "")}>
+    <div key={c.id} className={"chat-row " + (c.id === p.selected ? "selected" : "") + (c.unreadCount ? " unread" : "")}>
     <button
       className={"chat-item " + (c.id === p.selected ? "selected" : "")}
       aria-pressed={c.id === p.selected}
@@ -218,7 +280,13 @@ export function Inbox(p: Props) {
       </span>
       <span className="chat-meta">
         {c.lastMessageAt ? <time>{lastActive(c.lastMessageAt)}</time> : null}
-        {c.pinned ? <small>Pinned</small> : null}
+        {c.unreadCount ? (
+          <span className="unread-badge" aria-label={c.unreadCount + " unread"}>
+            {c.unreadCount > 99 ? "99+" : c.unreadCount}
+          </span>
+        ) : c.pinned ? (
+          <small>Pinned</small>
+        ) : null}
       </span>
     </button>
     <button className={"pin-button " + (c.pinned ? "pinned" : "")}
@@ -232,6 +300,15 @@ export function Inbox(p: Props) {
   const send = () => {
     if (!p.selected || p.busy || !p.connected) return;
     if (!text.trim() && !attachment) return;
+    if (editing) {
+      const target = editing, newText = text;
+      return p.act(async () => {
+        if (newText.trim() !== (target.message.text || "").trim())
+          await request(`/v1/messages/${encodeURIComponent(target.message.id)}`, "PUT", { text: newText });
+        setText(target.stash);
+        setEditing((e) => (e === target ? null : e));
+      });
+    }
     const id = p.selected, sentText = text, quoted = replyTo, file = attachment;
     nearBottom.current = true;
     return p.act(async () => {
@@ -313,10 +390,10 @@ export function Inbox(p: Props) {
           />
         </div>
         <div className="chat-filters" aria-label="Filter chats">
-          {(["All", "Pinned", "Groups", "Archived"] as const).map((value) => (
+          {(["All", "Unread", "Pinned", "Groups", "Archived"] as const).map((value) => (
             <button key={value} aria-pressed={filter === value}
               className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>
-              {value}{value === "Pinned" ? ` (${pinnedCount})` : ""}
+              {value}{value === "Pinned" ? ` (${pinnedCount})` : value === "Unread" && unreadChats ? ` (${unreadChats})` : ""}
             </button>
           ))}
         </div>
@@ -442,7 +519,7 @@ export function Inbox(p: Props) {
                         onClick={() => {
                           setAskedPhone(true);
                           void request(`/internal/chats/${encodeURIComponent(p.selected!)}/older`, "POST").catch(
-                            (e) => p.notify(String(e)),
+                            (e) => p.notify(String(e), "error"),
                           );
                         }}
                       >
@@ -552,8 +629,17 @@ export function Inbox(p: Props) {
                 </button>
               </div>
             ) : null}
-            {replyTo || attachment ? (
+            {replyTo || attachment || editing ? (
               <div className="compose-context">
+                {editing ? (
+                  <div className="reply-bar">
+                    <div className="quote static editing">
+                      <strong>Editing message</strong>
+                      <span>{editing.message.text}</span>
+                    </div>
+                    <button className="icon-button" aria-label="Cancel editing" onClick={cancelEdit}>✕</button>
+                  </div>
+                ) : null}
                 {replyTo ? (
                   <div className="reply-bar">
                     <div className="quote static">
@@ -619,6 +705,20 @@ export function Inbox(p: Props) {
               >
                 <AttachIcon />
               </button>
+              <span className="emoji-anchor">
+                <button
+                  type="button"
+                  className="icon-button attach-button"
+                  title="Emoji"
+                  aria-label="Insert emoji"
+                  aria-expanded={emoji}
+                  disabled={!p.connected || p.busy}
+                  onClick={() => setEmoji(!emoji)}
+                >
+                  <span aria-hidden="true">☺</span>
+                </button>
+                {emoji ? <EmojiPicker className="composer-emoji" pick={insert} close={() => setEmoji(false)} /> : null}
+              </span>
               <textarea
                 ref={composer}
                 rows={1}
@@ -626,9 +726,11 @@ export function Inbox(p: Props) {
                 placeholder={
                   !p.connected
                     ? "Connect WhatsApp to send a message"
-                    : attachment
-                      ? "Add a caption…"
-                      : "Write a message…"
+                    : editing
+                      ? "Edit your message…"
+                      : attachment
+                        ? "Add a caption…"
+                        : "Write a message…"
                 }
                 value={text}
                 maxLength={10000}
@@ -656,9 +758,69 @@ export function Inbox(p: Props) {
                 type="submit"
                 disabled={p.busy || !p.connected || (!text.trim() && !attachment)}
               >
-                <span aria-hidden="true">➤</span><span className="visually-hidden">Send message</span>
+                <span aria-hidden="true">{editing ? "✓" : "➤"}</span>
+                <span className="visually-hidden">{editing ? "Save edit" : "Send message"}</span>
               </button>
             </form>
+            {forwarding ? (
+              <ForwardDialog
+                message={forwarding}
+                chats={p.chats}
+                busy={p.busy}
+                close={() => setForwarding(null)}
+                send={(chatIds) =>
+                  void p.act(async () => {
+                    await request(`/v1/messages/${encodeURIComponent(forwarding.id)}/forward`, "POST", { chatIds });
+                    setForwarding(null);
+                    p.notify(`Forwarded to ${chatIds.length} chat${chatIds.length > 1 ? "s" : ""}`);
+                  })
+                }
+              />
+            ) : null}
+            {removing ? (
+              <div className="modal-backdrop" onClick={() => setRemoving(null)}>
+                <div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title" onClick={(e) => e.stopPropagation()}>
+                  <h3 id="delete-title">Delete message?</h3>
+                  <p className="quote static">
+                    <span>{summary(removing) || "Message"}</span>
+                  </p>
+                  <div className="modal-actions">
+                    {removing.direction === "outgoing" &&
+                    !removing.deletedAt &&
+                    Date.now() - removing.timestamp < deleteWindow ? (
+                      <button
+                        className="danger"
+                        disabled={!p.connected || p.busy}
+                        onClick={() =>
+                          void p.act(async () => {
+                            await request(`/v1/messages/${encodeURIComponent(removing.id)}?for=everyone`, "DELETE");
+                            setRemoving(null);
+                          })
+                        }
+                      >
+                        Delete for everyone
+                      </button>
+                    ) : null}
+                    <button
+                      className="secondary"
+                      disabled={p.busy}
+                      onClick={() =>
+                        void p.act(async () => {
+                          await request(`/v1/messages/${encodeURIComponent(removing.id)}?for=me`, "DELETE");
+                          setRemoving(null);
+                        })
+                      }
+                    >
+                      Delete for me
+                    </button>
+                    <button className="text-button" onClick={() => setRemoving(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                  <small>“Delete for me” removes it from this device only. Your phone keeps its copy.</small>
+                </div>
+              </div>
+            ) : null}
             {viewer ? (
               <div className="media-viewer" role="dialog" aria-modal="true" aria-label="Photo" onClick={() => setViewer(null)}>
                 <div className="media-viewer-bar" onClick={(e) => e.stopPropagation()}>
@@ -697,4 +859,68 @@ function AddPersonIcon() {
 }
 function PinIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5-4 1-3 5v3l-7-7h3l5-3zM9 15l-6 6" /></svg>;
+}
+/** Choose up to five chats to forward a message to. */
+function ForwardDialog({
+  message,
+  chats,
+  busy,
+  send,
+  close,
+}: {
+  message: Message;
+  chats: Chat[];
+  busy: boolean;
+  send: (chatIds: string[]) => void;
+  close: () => void;
+}) {
+  const [query, setQuery] = useState(""),
+    [chosen, setChosen] = useState<string[]>([]);
+  const q = query.trim().toLowerCase();
+  const shown = chats
+    .filter((c) => !c.archived && (chatTitle(c) + c.id).toLowerCase().includes(q))
+    .slice(0, 60);
+  const toggle = (id: string) =>
+    setChosen((list) =>
+      list.includes(id) ? list.filter((x) => x !== id) : list.length < 5 ? [...list, id] : list,
+    );
+  return (
+    <div className="modal-backdrop" onClick={close}>
+      <div className="modal forward-dialog" role="dialog" aria-modal="true" aria-labelledby="forward-title" onClick={(e) => e.stopPropagation()}>
+        <h3 id="forward-title">Forward message</h3>
+        <p className="quote static">
+          <span>{summary(message)}</span>
+        </p>
+        <input
+          autoFocus
+          aria-label="Search chats"
+          placeholder="Search chats"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className="forward-list" role="group" aria-label="Chats">
+          {shown.map((c) => (
+            <label key={c.id} className={"forward-option" + (chosen.includes(c.id) ? " chosen" : "")}>
+              <input
+                type="checkbox"
+                checked={chosen.includes(c.id)}
+                disabled={!chosen.includes(c.id) && chosen.length >= 5}
+                onChange={() => toggle(c.id)}
+              />
+              <span className="avatar">{initials(chatTitle(c))}</span>
+              <span>{chatTitle(c)}</span>
+            </label>
+          ))}
+          {!shown.length ? <div className="list-empty">No matching chats</div> : null}
+        </div>
+        <div className="modal-actions">
+          <small>{chosen.length}/5 chats chosen</small>
+          <button className="text-button" onClick={close}>Cancel</button>
+          <button disabled={busy || !chosen.length} onClick={() => send(chosen)}>
+            Forward
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

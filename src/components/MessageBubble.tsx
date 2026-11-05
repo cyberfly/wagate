@@ -2,6 +2,17 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { initials, phoneLabel, type Message } from "../lib/api";
 import { formatText, openExternal } from "../lib/format";
 import { duration, fileSize, useMedia, type LoadedMedia } from "../lib/media";
+import { EmojiPicker } from "./EmojiPicker";
+/** WhatsApp lets you edit a text message for 15 minutes after sending it. */
+export const editWindow = 15 * 60_000;
+/** ...and delete it for everyone for about two and a half days. */
+export const deleteWindow = 60 * 3600_000;
+const mediaTypes = ["image", "video", "audio", "document", "sticker"];
+/** Whether Wagate can forward this message: text, or media it can download. */
+export function forwardable(m: Message) {
+  if (m.deletedAt) return false;
+  return m.type === "text" || (mediaTypes.includes(m.type) && m.mediaAvailable !== false);
+}
 export const quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 /** Stored without its sender, so it reads as sent by the group itself. */
 export function unknownSender(m: Message) {
@@ -61,6 +72,10 @@ export interface BubbleActions {
   open: (m: Message, media: LoadedMedia) => void;
   save: (m: Message) => void;
   jump: (messageId: string) => void;
+  forward: (m: Message) => void;
+  edit: (m: Message) => void;
+  remove: (m: Message) => void;
+  copy: (m: Message) => void;
 }
 export function MessageBubble({
   message: m,
@@ -82,7 +97,9 @@ export function MessageBubble({
   canAct: boolean;
   actions: BubbleActions;
 }) {
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useState<false | "quick" | "all">(false);
+  const [menu, setMenu] = useState(false);
+  const canEdit = m.direction === "outgoing" && m.type === "text" && !m.deletedAt && Date.now() - m.timestamp < editWindow;
   const deleted = !!m.deletedAt;
   const sticker = m.type === "sticker" && !deleted;
   const mine = m.reactions?.find((r) => r.mine)?.emoji;
@@ -102,13 +119,18 @@ export function MessageBubble({
       onDoubleClick={() => canAct && !deleted && actions.reply(m)}
     >
       {m.direction === "incoming" && group && !continued ? <MessageSender message={m} /> : null}
+      {m.forwarded && !deleted ? (
+        <div className="forwarded">
+          <ForwardIcon /> Forwarded
+        </div>
+      ) : null}
       {m.quoted ? <Quote quoted={m.quoted} jump={actions.jump} peer={peer} /> : null}
       {deleted ? (
         <p className="deleted">🚫 {m.direction === "outgoing" ? "You deleted this message" : "This message was deleted"}</p>
       ) : (
         <MessageContent message={m} actions={actions} />
       )}
-      {showText ? <p>{formatText(caption!)}</p> : null}
+      {showText ? <p>{formatText(caption!, m.mentions)}</p> : null}
       <footer className="message-meta">
         {m.editedAt && !deleted ? <span className="edited">Edited</span> : null}
         <time dateTime={new Date(m.timestamp).toISOString()}>
@@ -132,45 +154,78 @@ export function MessageBubble({
           ))}
         </div>
       ) : null}
-      {!deleted ? (
-        <div className={"message-actions" + (picking ? " open" : "")}>
-          {picking ? (
-            <div className="reaction-picker" role="menu" aria-label="Choose a reaction">
-              {quickReactions.map((emoji) => (
-                <button
-                  key={emoji}
-                  role="menuitem"
-                  className={emoji === mine ? "mine" : ""}
-                  aria-label={emoji === mine ? "Remove " + emoji : "React " + emoji}
-                  onClick={() => {
-                    setPicking(false);
-                    actions.react(m, emoji === mine ? "" : emoji);
-                  }}
-                >
-                  {emoji}
+      <div className={"message-actions" + (picking || menu ? " open" : "")}>
+        {picking === "all" ? (
+          <EmojiPicker
+            className="reaction-full"
+            close={() => setPicking(false)}
+            pick={(emoji) => {
+              setPicking(false);
+              actions.react(m, emoji === mine ? "" : emoji);
+            }}
+          />
+        ) : null}
+        {picking === "quick" ? (
+          <div className="reaction-picker" role="menu" aria-label="Choose a reaction">
+            {quickReactions.map((emoji) => (
+              <button
+                key={emoji}
+                role="menuitem"
+                className={emoji === mine ? "mine" : ""}
+                aria-label={emoji === mine ? "Remove " + emoji : "React " + emoji}
+                onClick={() => {
+                  setPicking(false);
+                  actions.react(m, emoji === mine ? "" : emoji);
+                }}
+              >
+                {emoji}
+              </button>
+            ))}
+            <button role="menuitem" aria-label="More reactions" title="More reactions" onClick={() => setPicking("all")}>
+              ＋
+            </button>
+            <button className="picker-close" aria-label="Close reactions" onClick={() => setPicking(false)}>
+              ✕
+            </button>
+          </div>
+        ) : picking ? null : (
+          <>
+            {!deleted ? (
+              <>
+                <button title="React" aria-label="React to message" disabled={!canAct} onClick={() => setPicking("quick")}>
+                  <SmileIcon />
                 </button>
-              ))}
-              <button className="picker-close" aria-label="Close reactions" onClick={() => setPicking(false)}>
-                ✕
-              </button>
-            </div>
-          ) : (
-            <>
-              <button title="React" aria-label="React to message" disabled={!canAct} onClick={() => setPicking(true)}>
-                <SmileIcon />
-              </button>
-              <button title="Reply" aria-label="Reply to message" disabled={!canAct} onClick={() => actions.reply(m)}>
-                <ReplyIcon />
-              </button>
-              {["image", "video", "audio", "document", "sticker"].includes(m.type) ? (
-                <button title="Save to Downloads" aria-label="Save attachment to Downloads" onClick={() => actions.save(m)}>
-                  <DownloadIcon />
+                <button title="Reply" aria-label="Reply to message" disabled={!canAct} onClick={() => actions.reply(m)}>
+                  <ReplyIcon />
                 </button>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
+              </>
+            ) : null}
+            <button title="More" aria-label="More actions" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu(!menu)}>
+              <MoreIcon />
+            </button>
+            {menu ? (
+              <div className="message-menu" role="menu" onMouseLeave={() => setMenu(false)}>
+                {!deleted ? (
+                  <button role="menuitem" disabled={!canAct} onClick={() => (setMenu(false), actions.reply(m))}>Reply</button>
+                ) : null}
+                {forwardable(m) ? (
+                  <button role="menuitem" disabled={!canAct} onClick={() => (setMenu(false), actions.forward(m))}>Forward</button>
+                ) : null}
+                {!deleted && m.text ? (
+                  <button role="menuitem" onClick={() => (setMenu(false), actions.copy(m))}>Copy text</button>
+                ) : null}
+                {!deleted && mediaTypes.includes(m.type) && m.mediaAvailable !== false ? (
+                  <button role="menuitem" onClick={() => (setMenu(false), actions.save(m))}>Save to Downloads</button>
+                ) : null}
+                {canEdit ? (
+                  <button role="menuitem" disabled={!canAct} onClick={() => (setMenu(false), actions.edit(m))}>Edit</button>
+                ) : null}
+                <button role="menuitem" className="danger" onClick={() => (setMenu(false), actions.remove(m))}>Delete…</button>
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
     </article>
   );
   if (m.direction !== "incoming" || !group) return bubble;
@@ -434,6 +489,12 @@ function ReplyIcon() {
 }
 function SmileIcon() {
   return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01" /></svg>;
+}
+function MoreIcon() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>;
+}
+function ForwardIcon() {
+  return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 5 5 5-5 5" /><path d="M20 10H10a6 6 0 0 0-6 6v3" /></svg>;
 }
 export function DownloadIcon() {
   return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>;

@@ -21,6 +21,8 @@ export interface Chat {
   pinned: boolean;
   archived: boolean;
   lastMessage?: string | null;
+  /** Incoming messages not yet read here or on another device. */
+  unreadCount?: number;
 }
 export interface GroupInfo {
   id: string;
@@ -37,6 +39,8 @@ export interface ChatUpdate {
   /** When the chat was pinned, or null once unpinned. */
   pinnedAt?: number | null;
   archived?: boolean;
+  /** Unread messages; -1 when marked unread without a count. */
+  unreadCount?: number;
 }
 /** A person's LID and phone-number id, as WhatsApp revealed them. */
 export interface PhoneLink {
@@ -83,6 +87,15 @@ export interface Message {
   editedAt?: number | null;
   /** When the sender deleted it for everyone; its content is gone. */
   deletedAt?: number | null;
+  /** Forwarded from another chat. */
+  forwarded?: boolean;
+  /** People @mentioned in the text, with the names this device knows. */
+  mentions?: Mention[];
+}
+export interface Mention {
+  /** WhatsApp id; the text names them as `@` and the id's number. */
+  id: string;
+  name?: string | null;
 }
 export type MessageType =
   | "text"

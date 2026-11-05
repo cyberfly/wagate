@@ -41,6 +41,14 @@ export interface MessagingProvider {
   react(target: StoredMessage, emoji: string): Promise<void>;
   /** Downloads and decrypts a stored message's attachment. */
   downloadMedia(target: StoredMessage): Promise<Uint8Array>;
+  /** Sends read receipts, so the senders see blue ticks. */
+  markRead(targets: StoredMessage[]): Promise<void>;
+  /** Replaces the text of one of our own text messages. */
+  edit(target: StoredMessage, text: string): Promise<void>;
+  /** Deletes one of our own messages for everyone in the chat. */
+  revoke(target: StoredMessage): Promise<void>;
+  /** Forwards a stored message, marked as forwarded, to another chat. */
+  forward(target: StoredMessage, chatId: string): Promise<ReceivedMessage>;
   /** The small JPEG preview embedded in an image, video or sticker, if any. */
   thumbnail(target: StoredMessage): Uint8Array | null;
   getConnectionState(): ConnectionState;

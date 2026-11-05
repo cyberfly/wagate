@@ -142,6 +142,29 @@ export class FakeProvider implements MessagingProvider {
     if (!data) throw new Error("download failed");
     return data;
   }
+  read: StoredMessage[][] = [];
+  async markRead(targets: StoredMessage[]) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.read.push(targets);
+  }
+  edits: { target: StoredMessage; text: string }[] = [];
+  async edit(target: StoredMessage, text: string) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.edits.push({ target, text });
+  }
+  revoked: StoredMessage[] = [];
+  async revoke(target: StoredMessage) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.revoked.push(target);
+  }
+  forwarded: { target: StoredMessage; chatId: string }[] = [];
+  async forward(target: StoredMessage, chatId: string) {
+    this.forwarded.push({ target, chatId });
+    const m = await this.sendText(chatId, target.text ?? "");
+    m.type = target.type;
+    m.forwarded = true;
+    return m;
+  }
   thumbnails = new Map<string, Uint8Array>();
   thumbnail(target: StoredMessage) {
     return this.thumbnails.get(target.providerMessageId) ?? null;

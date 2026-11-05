@@ -33,6 +33,7 @@ let chats: Chat[] = [
     id: "60222222222@s.whatsapp.net",
     provider: "whatsapp",
     name: "Design team",
+    unreadCount: 3,
     type: "direct",
     lastMessageAt: now - 3600000,
     aiMode: "off",
@@ -211,6 +212,7 @@ messages.push(
   groupMessage(2, nadia, "Can the plugin technique work in ChatGPT too?", 12),
   groupMessage(3, nadia, "I haven’t tried it there yet.", 11),
   groupMessage(4, unnamed, "Check your email for the link.", 5),
+  groupMessage(6, { ...nadia, forwarded: true, mentions: [{ id: "60155550102@s.whatsapp.net", name: null }, { id: "100000000000001@lid", name: "Nadia" }] }, "@60155550102 thanks! Forwarding the slides here for @100000000000001 too.", 3),
   groupMessage(5, { senderId: "me", direction: "outgoing" }, "The recording is up — see the pinned post.", 1),
 );
 let drafts: Draft[] = [
@@ -794,6 +796,30 @@ export async function previewRequest(
     return { success: true, message: m };
   }
   if (url.pathname === "/internal/open") return { success: true };
+  if (/^\/internal\/chats\/[^/]+\/read$/.test(url.pathname)) {
+    const chat = chats.find((c) => c.id === decodeURIComponent(url.pathname.split("/")[3]!));
+    const read = chat?.unreadCount ?? 0;
+    if (chat) chat.unreadCount = 0;
+    return { read };
+  }
+  const own = url.pathname.match(/^\/v1\/messages\/(?!send(?:-media)?$)([^/]+)(\/forward)?$/);
+  if (own) {
+    const m = messages.find((x) => x.id === decodeURIComponent(own[1]!));
+    if (!m) throw new Error("Invalid message");
+    if (own[2]) {
+      const sent = (data?.chatIds as string[]).map((chatId) => {
+        const copy: Message = { ...m, id: crypto.randomUUID(), chatId, senderId: "me", direction: "outgoing", forwarded: true, quoted: null, reactions: [], status: "sent", editedAt: null, timestamp: Date.now() };
+        if (sentMedia.has(m.id)) sentMedia.set(copy.id, sentMedia.get(m.id)!);
+        messages.push(copy);
+        return copy;
+      });
+      return { success: true, messages: sent };
+    }
+    if (method === "PUT") Object.assign(m, { text: String(data?.text), editedAt: Date.now() });
+    else if (url.searchParams.get("for") === "everyone") Object.assign(m, { deletedAt: Date.now(), text: undefined, media: null });
+    else messages = messages.filter((x) => x !== m);
+    return { success: true, message: m };
+  }
   if (url.pathname.endsWith("/older")) return { requested: true };
   /** The reply context a sample send carries. */
   const quote = (replyTo: unknown): Message["quoted"] => {

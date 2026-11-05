@@ -260,6 +260,26 @@ export function createApi(s: Services) {
     const message = await profile(c).sender.react(c.req.param("id")!, data.emoji);
     return c.json({ success: true, message });
   });
+  app.put("/v1/messages/:id", requireScope("messages.send"), async (c) => {
+    const data = await body(c);
+    const message = await profile(c).sender.edit(c.req.param("id")!, string(data.text, "text"));
+    return c.json({ success: true, message });
+  });
+  // ?for=everyone deletes our own message in the chat; ?for=me (the default)
+  // removes any message from this device only.
+  app.delete("/v1/messages/:id", requireScope("messages.send"), async (c) => {
+    const scope = c.req.query("for") || "me";
+    if (scope !== "me" && scope !== "everyone") throw new Error("Invalid delete: use for=me or for=everyone");
+    const sender = profile(c).sender, id = c.req.param("id")!;
+    if (scope === "me") return c.json(sender.deleteForMe(id));
+    return c.json({ success: true, message: await sender.deleteForEveryone(id) });
+  });
+  app.post("/v1/messages/:id/forward", requireScope("messages.send"), async (c) => {
+    const data = await body(c);
+    if (!Array.isArray(data.chatIds)) throw new Error("Invalid forward: choose 1–5 chats");
+    const chatIds = data.chatIds.map((id: unknown) => string(id, "recipient", 100));
+    return c.json({ success: true, ...(await profile(c).sender.forward(c.req.param("id")!, chatIds)) });
+  });
   app.get("/v1/messages/:id/media", requireScope("messages.read"), async (c) => {
     const media = await profile(c).sender.media(c.req.param("id")!);
     if (!media.complete)
@@ -553,6 +573,9 @@ export function createApi(s: Services) {
       await p.provider.requestHistory(oldest, 50);
       return c.json({ requested: true });
     });
+    app.post("/internal/chats/:chatId/read", async (c) =>
+      c.json(await profile(c).sender.markRead(c.req.param("chatId")!)),
+    );
     app.post("/internal/chats/:chatId/draft", async (c) =>
       c.json(await profile(c).copilot.generate(resolveChatId(c.req.param("chatId")!))),
     );

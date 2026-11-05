@@ -4405,3 +4405,166 @@ nav button:hover { color: #d7dae0; }
 .message p strong, .message p em, .message p s { color: inherit; }
 .message.outgoing .media-text strong { color: #1e2a20; }
 .pending-media .media-text small { white-space: normal; }
+
+/* Unread chats, forwarded labels, mentions. */
+.unread-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #282c34;
+  background: #98c379;
+}
+.chat-row.unread .chat-info strong { color: #d7dae0; font-weight: 700; }
+.chat-row.unread .chat-info small { color: #c8ccd4; }
+.chat-row.unread .chat-meta time { color: #98c379; }
+.forwarded {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-style: italic;
+  color: #9da5b4;
+}
+.message.outgoing .forwarded { color: #385237; }
+.mention { font-weight: 600; color: #61afef; }
+.message.outgoing .mention { color: #1d4f91; }
+
+/* The message "more" menu. */
+.message-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  min-width: 170px;
+  padding: 4px;
+  border: 1px solid #3e4451;
+  border-radius: 8px;
+  background: #2c313a;
+  box-shadow: 0 8px 20px #0008;
+  z-index: 5;
+}
+.message.incoming .message-menu { right: auto; left: 0; }
+.message-actions .message-menu button {
+  width: auto;
+  height: auto;
+  display: block;
+  padding: 7px 10px;
+  border-radius: 5px;
+  text-align: left;
+  font-size: 13px;
+  color: #abb2bf;
+}
+.message-actions .message-menu button.danger { color: #e06c75; }
+
+/* Emoji picker, for the composer and for reactions. */
+.emoji-anchor { position: relative; display: inline-flex; }
+.emoji-picker {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: 6px;
+  width: 316px;
+  padding: 8px;
+  border: 1px solid #3e4451;
+  border-radius: 10px;
+  background: #2c313a;
+  box-shadow: 0 10px 28px #0009;
+}
+.emoji-picker > strong { font-size: 11px; color: #9da5b4; font-weight: 600; }
+.emoji-tabs { display: flex; gap: 2px; border-bottom: 1px solid #3e4451; padding-bottom: 6px; }
+.emoji-tabs button, .emoji-grid button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 20px;
+  background: none;
+  box-shadow: none;
+}
+.emoji-tabs button.active { background: #3e4451; }
+.emoji-tabs button:hover, .emoji-grid button:hover { background: #3e4451; }
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 32px);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.reaction-full { bottom: auto; top: calc(100% + 4px); right: 0; left: auto; }
+.message.incoming .reaction-full { left: 0; right: auto; }
+
+/* Dialogs: forward and delete. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #0000009c;
+}
+.modal {
+  display: grid;
+  gap: 12px;
+  width: min(420px, 100%);
+  max-height: calc(100vh - 48px);
+  padding: 20px;
+  border: 1px solid #3e4451;
+  border-radius: 12px;
+  background: #2c313a;
+  box-shadow: 0 16px 40px #000a;
+}
+.modal h3 { margin: 0; color: #d7dae0; }
+.modal .quote.static { margin: 0; cursor: default; }
+.modal-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.modal-actions small { margin-right: auto; }
+.modal button.danger { color: #fff; background: #e06c75; }
+.modal button.danger:hover { color: #fff; background: #ec7f88; }
+.forward-dialog { width: min(460px, 100%); }
+.forward-list {
+  display: grid;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.forward-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.forward-option:hover, .forward-option.chosen { background: #3e4451; }
+.forward-option input { width: auto; margin: 0; accent-color: #61afef; }
+.forward-option .avatar { width: 30px; height: 30px; font-size: 11px; }
+.quote.editing strong { color: #e5c07b; }
+.message-actions .message-menu button.danger { background: none; }
+.message-actions .message-menu button:hover:not(:disabled) { background: #3e4451; }
+.info-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 88px;
+  z-index: 60;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 9px 16px;
+  border: 1px solid #4b5263;
+  border-radius: 8px;
+  transform: translateX(-50%);
+  font-size: 13px;
+  color: #d7dae0;
+  background: #3e4451;
+  box-shadow: 0 8px 20px #0008;
+  overflow-wrap: anywhere;
+}
