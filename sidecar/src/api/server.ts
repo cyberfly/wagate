@@ -28,6 +28,8 @@ interface Services {
    */
   publicMode?: boolean;
   databaseHealthy: () => boolean;
+  /** Runs the command that opens a link; tests replace it. */
+  openUrl?: (command: string[]) => void;
   log: (level: "info" | "error", event: string) => void;
 }
 /** Chooses a profile for one request; the query form suits EventSource clients. */
@@ -54,6 +56,12 @@ async function body(c: Context) {
   } catch {
     throw new Error("Expected a JSON object");
   }
+}
+/** A string field that may be left out; blank counts as left out. */
+function optional(value: unknown, name: string, max = 200) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || value.length > max) throw new Error(`Invalid ${name}`);
+  return value.trim() || undefined;
 }
 function string(value: unknown, name: string, max = 10000) {
   if (typeof value !== "string" || !value.trim() || value.length > max)
@@ -95,17 +103,21 @@ export function createApi(s: Services) {
   const limit = (maxSize: number, error: string) =>
     bodyLimit({ maxSize, onError: (c) => c.json({ error }, 413) });
   const standardLimit = limit(64 * 1024, "Request too large");
+  // Base64 makes a 16 MB attachment about 22 MB of JSON.
+  const mediaLimit = limit(23 * 1024 * 1024, "Attachment is too large. Send files up to 16 MB.");
   // A CSV broadcast carries every rendered message in one request.
   const broadcastLimit = limit(
     4 * 1024 * 1024,
     "Broadcast is too large. Split the CSV into smaller files.",
   );
   app.use("*", (c, next) =>
-    (!s.publicMode &&
-    (c.req.path === "/internal/broadcasts" ||
-      c.req.path === "/internal/group-imports")
-      ? broadcastLimit
-      : standardLimit)(c, next),
+    (c.req.path === "/v1/messages/send-media"
+      ? mediaLimit
+      : !s.publicMode &&
+          (c.req.path === "/internal/broadcasts" ||
+            c.req.path === "/internal/group-imports")
+        ? broadcastLimit
+        : standardLimit)(c, next),
   );
   app.use("*", async (c, next) => {
     c.header("Cache-Control", "no-store");
@@ -219,8 +231,40 @@ export function createApi(s: Services) {
     const message = await profile(c).sender.send(
       string(data.chatId || data.to, "recipient", 100),
       string(data.text, "text"),
+      { replyTo: optional(data.replyTo, "reply") },
     );
     return c.json({ success: true, messageId: message.id, message });
+  });
+  app.post("/v1/messages/send-media", requireScope("messages.send"), async (c) => {
+    const data = await body(c);
+    if (data.to && data.chatId)
+      return c.json({ error: "Provide to or chatId, not both" }, 400);
+    const encoded = string(data.data, "attachment", 23 * 1024 * 1024).replace(/^data:[^,]*,/, "");
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
+      throw new Error("Invalid attachment: data must be base64");
+    const message = await profile(c).sender.sendMedia(
+      string(data.chatId || data.to, "recipient", 100),
+      {
+        data: new Uint8Array(Buffer.from(encoded, "base64")),
+        mimetype: string(data.mimetype, "attachment type", 100).toLowerCase(),
+        fileName: optional(data.fileName, "file name", 200),
+        caption: optional(data.caption, "caption", 4000),
+      },
+      { replyTo: optional(data.replyTo, "reply") },
+    );
+    return c.json({ success: true, messageId: message.id, message });
+  });
+  app.post("/v1/messages/:id/react", requireScope("messages.send"), async (c) => {
+    const data = await body(c);
+    if (typeof data.emoji !== "string") throw new Error("Invalid reaction");
+    const message = await profile(c).sender.react(c.req.param("id")!, data.emoji);
+    return c.json({ success: true, message });
+  });
+  app.get("/v1/messages/:id/media", requireScope("messages.read"), async (c) => {
+    const media = await profile(c).sender.media(c.req.param("id")!);
+    if (!media.complete)
+      return c.json({ error: media.error || "Media could not be downloaded. Try again later." }, 502);
+    return c.body(Buffer.from(media.data), 200, { "Content-Type": media.mimetype });
   });
   app.get(
     "/v1/events",
@@ -263,7 +307,10 @@ export function createApi(s: Services) {
     });
     app.get("/internal/snapshot", (c) => {
       const chatId = c.req.query("chatId");
+      // Scrolling up asks for more of the chat's stored history.
+      const limit = Math.min(500, Math.max(50, Number(c.req.query("limit")) || 50));
       const p = profile(c);
+      const page = chatId ? p.messages.page(chatId, limit) : null;
       return c.json({
         health: {
           status: s.databaseHealthy() && p.databaseHealthy() ? "ok" : "error",
@@ -279,7 +326,8 @@ export function createApi(s: Services) {
         profiles: s.profiles.list(),
         connection: p.provider.getConnectionState(),
         chats: p.chats.list(),
-        messages: chatId ? p.messages.page(chatId).messages : [],
+        messages: page?.messages ?? [],
+        hasMoreMessages: !!page?.nextCursor,
         drafts: chatId ? p.drafts.list(chatId) : [],
         processing: p.copilot.status(),
         tunnel: s.tunnel?.status() ?? null,
@@ -303,6 +351,41 @@ export function createApi(s: Services) {
     });
     app.delete("/internal/profiles/:id", async (c) =>
       c.json(await s.profiles.remove(c.req.param("id"))),
+    );
+    // Links in messages open in the system browser. Only web addresses are
+    // passed on, as one argument and never through a shell.
+    app.post("/internal/open", async (c) => {
+      const data = await body(c);
+      let url: URL;
+      try {
+        url = new URL(string(data.url, "link", 4000));
+      } catch {
+        throw new Error("Invalid link");
+      }
+      if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Invalid link");
+      const command =
+        process.platform === "darwin"
+          ? ["open", url.href]
+          : process.platform === "win32"
+            ? ["rundll32", "url.dll,FileProtocolHandler", url.href]
+            : ["xdg-open", url.href];
+      (s.openUrl ?? ((cmd: string[]) => void Bun.spawn(cmd, { stdio: ["ignore", "ignore", "ignore"] })))(command);
+      return c.json({ success: true });
+    });
+    // The webview receives JSON only, so attachments travel as base64.
+    app.get("/internal/messages/:id/media", async (c) => {
+      const sender = profile(c).sender, id = c.req.param("id")!;
+      const media: { mimetype: string; data: Uint8Array; complete: boolean; error?: string } =
+        c.req.query("preview") ? sender.preview(id) : await sender.media(id);
+      return c.json({
+        mimetype: media.mimetype,
+        data: Buffer.from(media.data).toString("base64"),
+        complete: media.complete,
+        ...(media.complete ? {} : { error: media.error ?? null }),
+      });
+    });
+    app.post("/internal/messages/:id/save", async (c) =>
+      c.json(await profile(c).sender.saveMedia(c.req.param("id")!)),
     );
     app.get("/internal/groups", async (c) =>
       c.json({ groups: await profile(c).provider.listGroups() }),
@@ -456,6 +539,20 @@ export function createApi(s: Services) {
       await p.provider.requestHistory(anchor, 50);
       return c.json({ requested: true });
     });
+    // Older messages than this device has are asked of the phone; they arrive
+    // later as history. At most once a minute per chat.
+    const older = new Map<string, number>();
+    app.post("/internal/chats/:chatId/older", async (c) => {
+      const chatId = resolveChatId(c.req.param("chatId")!);
+      const p = profile(c);
+      const oldest = p.messages.oldest(chatId);
+      const key = p.id + " " + chatId;
+      if (!oldest || Date.now() - (older.get(key) ?? 0) < 60_000)
+        return c.json({ requested: false });
+      older.set(key, Date.now());
+      await p.provider.requestHistory(oldest, 50);
+      return c.json({ requested: true });
+    });
     app.post("/internal/chats/:chatId/draft", async (c) =>
       c.json(await profile(c).copilot.generate(resolveChatId(c.req.param("chatId")!))),
     );
@@ -562,7 +659,7 @@ export function createApi(s: Services) {
       );
     s.log("error", "api.request.failed");
     const safe =
-      /^(Secure storage |Invalid |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare|Broadcast |Automation |Group import |Profile )/.test(
+      /^(Secure storage |Invalid |Media |Attachment |Expected |Use |Text must |WhatsApp is disconnected|WhatsApp did not|WhatsApp returned|OpenRouter |Add an OpenRouter|AI reply|Enable Copilot|A draft is|No recent |Copilot |Draft |Reply must|Context size|Mode must|Choose valid|Cloudflare |The Cloudflare|Broadcast |Automation |Group import |Profile )/.test(
         error.message,
       );
     return c.json(

@@ -66,8 +66,11 @@ export default function App() {
     [selected, setSelected] = useState<string | null>(null),
     [sidebarMinimized, setSidebarMinimized] = useState(false),
     [busy, setBusy] = useState(false),
-    [notice, setNotice] = useState("");
-  const { snapshot, error, refresh } = useGateway(profileId, selected);
+    [notice, setNotice] = useState(""),
+    [messageLimit, setMessageLimit] = useState(50);
+  const { snapshot, error, refresh } = useGateway(profileId, selected, messageLimit);
+  // Each chat opens on its latest messages.
+  useEffect(() => setMessageLimit(50), [selected, profileId]);
   // Switching numbers starts fresh: no open chat, no notice from the last one.
   const selectProfile = useCallback((id: string) => {
     setActiveProfile(id);
@@ -330,6 +333,9 @@ export default function App() {
               }
               selected={selected}
               select={setSelected}
+              hasMore={!!snapshot?.hasMoreMessages}
+              loadOlder={() => setMessageLimit((n) => Math.min(500, n + 50))}
+              notify={setNotice}
               connected={connected && !error}
               processing={
                 !!selected && !!snapshot?.processing.includes(selected)

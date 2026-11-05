@@ -98,9 +98,12 @@ export class ProfileRuntime {
           this.log("error", "whatsapp.message.rejected", {
             code: receipt.error ?? "none",
           });
+        this.sender.receipt(receipt);
         this.broadcasts.receipt(receipt);
         this.automations.receipt(receipt);
       },
+      reaction: (reaction) => this.sender.reaction(reaction),
+      change: (change) => this.sender.change(change),
       chat: (chat) => {
         if (this.chats.apply(chat))
           this.events.publish("chat.updated", { id: chat.id });

@@ -101,6 +101,8 @@ export interface Snapshot {
   connection: ConnectionState;
   chats: Chat[];
   messages: Message[];
+  /** The chat has older stored messages than `messages` holds. */
+  hasMoreMessages?: boolean;
   drafts: Draft[];
   processing: string[];
   tunnel: TunnelState | null;

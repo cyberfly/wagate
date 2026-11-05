@@ -153,6 +153,28 @@ INSERT INTO profiles(id,name,created_at) VALUES('default','Main',0);
 ALTER TABLE api_keys ADD COLUMN profiles TEXT;
 PRAGMA user_version = 10;
 `;
+// Messages gain what a chat shows besides text: attachment details and the
+// encrypted-media reference needed to download it, the message replied to,
+// delivery status, edits and deletions. Reactions are keyed by WhatsApp's
+// message id, which stays the same whichever id (phone or LID) names the chat.
+// Downloaded attachments are cached so a chat reopens without downloading again.
+export const messageFeaturesSchema = `
+ALTER TABLE messages ADD COLUMN media TEXT;
+ALTER TABLE messages ADD COLUMN media_source BLOB;
+ALTER TABLE messages ADD COLUMN quoted TEXT;
+ALTER TABLE messages ADD COLUMN status TEXT;
+ALTER TABLE messages ADD COLUMN edited_at INTEGER;
+ALTER TABLE messages ADD COLUMN deleted_at INTEGER;
+CREATE INDEX messages_provider_id ON messages(provider_message_id);
+CREATE TABLE reactions (
+ provider_message_id TEXT NOT NULL, sender_id TEXT NOT NULL, emoji TEXT NOT NULL,
+ timestamp INTEGER NOT NULL, PRIMARY KEY(provider_message_id, sender_id)
+);
+CREATE TABLE media_cache (
+ message_id TEXT PRIMARY KEY, mimetype TEXT NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL
+);
+PRAGMA user_version = 11;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -165,4 +187,5 @@ export const migrations = [
   groupAutomationSchema,
   lidPhonesSchema,
   profilesSchema,
+  messageFeaturesSchema,
 ];

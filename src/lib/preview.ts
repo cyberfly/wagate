@@ -103,6 +103,77 @@ let messages: Message[] = [
     timestamp: now,
   },
 ];
+// Attachments, a reply, reactions, ticks, an edit and a deletion, as WhatsApp
+// shows them. Their bytes are drawn when first opened.
+const sample = (n: number, m: Partial<Message>, minutesAgo: number): Message => ({
+  id: `media-${n}`,
+  provider: "whatsapp",
+  providerMessageId: `media-${n}`,
+  chatId: ali.id,
+  senderId: ali.id,
+  direction: "incoming",
+  type: "text",
+  timestamp: now - minutesAgo * 60000,
+  reactions: [],
+  ...m,
+});
+messages.unshift(
+  sample(1, { type: "image", text: "Whiteboard from today’s session", media: { mimetype: "image/png", width: 1200, height: 800, size: 184000 } }, 26 * 60),
+  sample(2, { direction: "outgoing", senderId: "me", status: "read", text: "Thanks! *Very* helpful — I’ll share it with the team. Notes are at https://example.com/notes", quoted: { providerMessageId: "media-1", messageId: "media-1", fromMe: false, senderId: ali.id, senderName: "Ali Rahman", type: "image", text: "Whiteboard from today’s session" }, reactions: [{ emoji: "👍", count: 1, mine: false }] }, 26 * 60 - 2),
+  sample(3, { type: "document", text: "Proposal-v3.pdf", media: { mimetype: "application/pdf", fileName: "Proposal-v3.pdf", size: 482000 } }, 25 * 60),
+  sample(4, { type: "audio", media: { mimetype: "audio/ogg; codecs=opus", ptt: true, seconds: 14 }, reactions: [{ emoji: "❤️", count: 1, mine: true }] }, 24 * 60),
+  sample(5, { direction: "outgoing", senderId: "me", status: "delivered", text: "Sent you the _final_ figures.", editedAt: now - 23 * 3600000 }, 23 * 60 + 30),
+  sample(6, { deletedAt: now - 23 * 3600000 }, 23 * 60),
+  sample(7, { type: "location", text: "Menara KL · Jalan Puncak", media: { latitude: 3.15278, longitude: 101.70361 } }, 22 * 60),
+);
+messages = messages.map((m) =>
+  m.id === "sample-2" ? { ...m, status: "read" } : m.id === "sample-3" ? { ...m, quoted: { providerMessageId: "sample-1", messageId: "sample-1", fromMe: false, senderId: ali.id, senderName: "Ali Rahman", type: "text", text: "Hey! Do you have time to go over the proposal tomorrow?" } } : m,
+);
+/** Bytes for attachments sent in the sample UI, as base64. */
+const sentMedia = new Map<string, { mimetype: string; data: string }>();
+function drawImage(label: string, preview: boolean) {
+  const canvas = document.createElement("canvas");
+  canvas.width = preview ? 48 : 1200;
+  canvas.height = preview ? 32 : 800;
+  const g = canvas.getContext("2d")!;
+  const grad = g.createLinearGradient(0, 0, canvas.width, canvas.height);
+  grad.addColorStop(0, "#61afef");
+  grad.addColorStop(1, "#c678dd");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  if (!preview) {
+    g.fillStyle = "#ffffffdd";
+    g.font = "bold 64px sans-serif";
+    g.fillText(label, 80, 420);
+  }
+  return canvas.toDataURL(preview ? "image/jpeg" : "image/png").split(",")[1]!;
+}
+/** A short tone as WAV, standing in for a voice note. */
+function tone() {
+  const rate = 8000, samples = rate * 2;
+  const bytes = new Uint8Array(44 + samples);
+  const view = new DataView(bytes.buffer);
+  const text = (o: number, t: string) => [...t].forEach((c, i) => view.setUint8(o + i, c.charCodeAt(0)));
+  text(0, "RIFF"); view.setUint32(4, 36 + samples, true); text(8, "WAVEfmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate, true); view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true); text(36, "data"); view.setUint32(40, samples, true);
+  for (let i = 0; i < samples; i++) bytes[44 + i] = 128 + Math.round(40 * Math.sin((i / rate) * 2 * Math.PI * 440));
+  let binary = "";
+  bytes.forEach((b) => (binary += String.fromCharCode(b)));
+  return btoa(binary);
+}
+function previewMedia(id: string, preview: boolean) {
+  const m = messages.find((x) => x.id === id);
+  if (!m) throw new Error("Invalid message");
+  const sent = sentMedia.get(id);
+  if (sent && !preview) return { ...sent, complete: true };
+  if (m.type === "image" || m.type === "video" || sent)
+    return { mimetype: preview ? "image/jpeg" : "image/png", data: drawImage(m.text || "Photo", preview), complete: !preview };
+  if (m.type === "audio") return { mimetype: "audio/wav", data: tone(), complete: true };
+  if (m.type === "document") return { mimetype: "application/pdf", data: btoa("%PDF-1.4 sample"), complete: true };
+  throw new Error("Media is unavailable for this message");
+}
 // A community group: members named, known only by number, and one message
 // synced without its sender.
 const community: Chat = {
@@ -701,6 +772,58 @@ export async function previewRequest(
     if (chat) chat.aiMode = data?.mode === "copilot" ? "copilot" : "off";
     return chat;
   }
+  const messageRoute = url.pathname.match(/^\/(?:internal|v1)\/messages\/([^/]+)\/(media|save|react)$/);
+  if (messageRoute) {
+    const id = decodeURIComponent(messageRoute[1]!);
+    if (messageRoute[2] === "media") {
+      await new Promise((r) => setTimeout(r, 400));
+      return previewMedia(id, url.searchParams.has("preview"));
+    }
+    const m = messages.find((x) => x.id === id);
+    if (!m) throw new Error("Invalid message");
+    if (messageRoute[2] === "save")
+      return { path: "~/Downloads/" + (m.media?.fileName || `WhatsApp ${m.type} sample`) };
+    const emoji = String(data?.emoji ?? "");
+    const rest = (m.reactions ?? [])
+      .map((r) => (r.mine ? { ...r, count: r.count - 1, mine: false } : r))
+      .filter((r) => r.count > 0);
+    const same = rest.find((r) => r.emoji === emoji);
+    if (same) Object.assign(same, { count: same.count + 1, mine: true });
+    else if (emoji) rest.push({ emoji, count: 1, mine: true });
+    m.reactions = rest;
+    return { success: true, message: m };
+  }
+  if (url.pathname === "/internal/open") return { success: true };
+  if (url.pathname.endsWith("/older")) return { requested: true };
+  /** The reply context a sample send carries. */
+  const quote = (replyTo: unknown): Message["quoted"] => {
+    const q = messages.find((m) => m.id === replyTo);
+    return q
+      ? { providerMessageId: q.providerMessageId, messageId: q.id, fromMe: q.direction === "outgoing", senderId: q.senderId, senderName: q.senderName ?? null, type: q.type, text: q.text }
+      : null;
+  };
+  if (path === "/v1/messages/send-media") {
+    const id = crypto.randomUUID();
+    const mimetype = String(data?.mimetype);
+    const type: Message["type"] = /^image\/(jpeg|png|webp)$/.test(mimetype) ? "image" : mimetype === "video/mp4" ? "video" : mimetype.startsWith("audio/") ? "audio" : "document";
+    sentMedia.set(id, { mimetype, data: String(data?.data) });
+    messages.push({
+      id,
+      provider: "whatsapp",
+      providerMessageId: id,
+      chatId: String(data?.chatId),
+      senderId: "me",
+      direction: "outgoing",
+      type,
+      text: (data?.caption as string | undefined) || (type === "document" ? String(data?.fileName) : undefined),
+      media: { mimetype, fileName: type === "document" ? String(data?.fileName) : undefined, size: Math.round((String(data?.data).length * 3) / 4) },
+      quoted: quote(data?.replyTo),
+      status: "sent",
+      reactions: [],
+      timestamp: Date.now(),
+    });
+    return { success: true, messageId: id };
+  }
   if (path === "/v1/messages/send" || path.endsWith("/send")) {
     const draft = drafts.find((d) => d.id === path.split("/")[3]);
     const id = crypto.randomUUID();
@@ -714,6 +837,9 @@ export async function previewRequest(
       direction: "outgoing",
       type: "text",
       text: String(data?.text),
+      quoted: quote(data?.replyTo),
+      status: "sent",
+      reactions: [],
       timestamp: Date.now(),
     });
     const chat = chats.find((c) => c.id === chatId);

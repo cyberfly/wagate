@@ -9,12 +9,18 @@ import { ProfileRuntime } from "../src/profiles/profile-runtime";
 import { TunnelService } from "../src/tunnel/tunnel-service";
 import { AutomationRepository } from "../src/automation/automation-repository";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
-import type { MessagingProvider } from "../src/messaging/messaging-provider";
+import type {
+  MessagingProvider,
+  SendOptions,
+  StoredMessage,
+} from "../src/messaging/messaging-provider";
 import type {
   Message,
   ConnectionState,
   GroupInfo,
   GroupAddResult,
+  OutgoingMedia,
+  ReceivedMessage,
 } from "../src/messaging/types";
 export const chatId = "60123456789@s.whatsapp.net";
 export function incoming(
@@ -84,18 +90,61 @@ export class FakeProvider implements MessagingProvider {
   getConnectionState() {
     return this.state;
   }
-  async sendText(chatId: string, text: string) {
+  /** The message each send replied to, in send order. */
+  quotes: (StoredMessage | undefined)[] = [];
+  async sendText(chatId: string, text: string, options?: SendOptions) {
     const id = crypto.randomUUID().replace(/-/g, "").toUpperCase();
     // Ids take the Baileys provider's shape, so receipts can find them.
-    const m: Message = {
+    const m: ReceivedMessage = {
       ...incoming(`whatsapp:${chatId}:${id}`),
       providerMessageId: id,
       chatId,
       text,
       direction: "outgoing",
+      status: "sent",
+      ...(options?.quoted
+        ? {
+            quoted: {
+              providerMessageId: options.quoted.providerMessageId,
+              senderId: options.quoted.senderId,
+              fromMe: options.quoted.direction === "outgoing",
+              type: options.quoted.type,
+              text: options.quoted.text,
+            },
+          }
+        : {}),
     };
     this.sent.push(m);
+    this.quotes.push(options?.quoted);
     return m;
+  }
+  media: OutgoingMedia[] = [];
+  async sendMedia(chatId: string, media: OutgoingMedia, options?: SendOptions) {
+    this.media.push(media);
+    const m = await this.sendText(chatId, media.caption ?? "", options);
+    m.type = media.mimetype.startsWith("image/") ? "image" : "document";
+    m.text = media.caption ?? media.fileName;
+    m.media = { mimetype: media.mimetype, size: media.data.length };
+    m.mediaSource = new Uint8Array([1]);
+    return m;
+  }
+  reactions: { target: StoredMessage; emoji: string }[] = [];
+  async react(target: StoredMessage, emoji: string) {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    this.reactions.push({ target, emoji });
+  }
+  /** Bytes each attachment downloads as; a missing entry fails the download. */
+  downloads = new Map<string, Uint8Array>();
+  downloadCalls = 0;
+  async downloadMedia(target: StoredMessage) {
+    this.downloadCalls++;
+    const data = this.downloads.get(target.providerMessageId);
+    if (!data) throw new Error("download failed");
+    return data;
+  }
+  thumbnails = new Map<string, Uint8Array>();
+  thumbnail(target: StoredMessage) {
+    return this.thumbnails.get(target.providerMessageId) ?? null;
   }
 }
 export function setup(ai?: AIProvider) {

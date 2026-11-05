@@ -14,7 +14,7 @@ const provider = new BaileysProvider(async () => vault, {
     if (state.status === "auth_error") finish(false);
   },
   chat: () => {},
-  receipt: () => {},
+  receipt: () => {}, reaction: () => {}, change: () => {},
   contacts: () => {},
   phones: () => {},
   message: () => {},

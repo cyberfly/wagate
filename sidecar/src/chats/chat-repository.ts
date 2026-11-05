@@ -5,7 +5,14 @@ import type { Chat, ChatUpdate } from "../messaging/types";
 const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name,c.id) AS name,
  c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode,
  COALESCE(c.inbox_pinned,c.pinned_at IS NOT NULL) AS pinned,c.archived<>0 AS archived,
- (SELECT COALESCE(m.text,'[' || m.type || ']') FROM messages m WHERE m.chat_id=c.id
+ (SELECT CASE WHEN m.deleted_at IS NOT NULL THEN '🚫 This message was deleted'
+   WHEN m.type='text' THEN m.text
+   ELSE CASE m.type WHEN 'image' THEN '📷 ' WHEN 'video' THEN '🎥 ' WHEN 'audio' THEN '🎤 ' WHEN 'document' THEN '📄 '
+     WHEN 'sticker' THEN '💟 ' WHEN 'location' THEN '📍 ' WHEN 'contact' THEN '👤 ' WHEN 'poll' THEN '📊 ' ELSE '' END
+    || COALESCE(substr(m.text,1,CASE WHEN instr(m.text,char(10))>0 THEN instr(m.text,char(10))-1 ELSE 200 END),
+     CASE m.type WHEN 'image' THEN 'Photo' WHEN 'video' THEN 'Video' WHEN 'audio' THEN 'Audio' WHEN 'document' THEN 'Document'
+      WHEN 'sticker' THEN 'Sticker' WHEN 'location' THEN 'Location' WHEN 'contact' THEN 'Contact' WHEN 'poll' THEN 'Poll' ELSE 'Message' END)
+   END FROM messages m WHERE m.chat_id=c.id
   ORDER BY m.timestamp DESC,m.id DESC LIMIT 1) AS lastMessage`;
 const from = "chats c LEFT JOIN contacts k ON k.id=c.id";
 type Row = Omit<Chat, "pinned" | "archived"> & {

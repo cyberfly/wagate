@@ -1,5 +1,16 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AddMember } from "./AddMember";
+import {
+  AttachIcon,
+  DownloadIcon,
+  MessageBubble,
+  senderLabel,
+  summary,
+  unknownSender,
+  who,
+  type BubbleActions,
+} from "./MessageBubble";
+import { fileSize, readFile, type LoadedMedia } from "../lib/media";
 import {
   request,
   chatTitle,
@@ -15,6 +26,11 @@ interface Props {
   drafts: Draft[];
   selected: string | null;
   select: (id: string | null) => void;
+  /** Older stored messages exist above the loaded ones. */
+  hasMore: boolean;
+  loadOlder: () => void;
+  /** Shows a message in the app's notice bar. */
+  notify: (text: string) => void;
   connect: () => void;
   connected: boolean;
   processing: boolean;
@@ -45,10 +61,101 @@ export function Inbox(p: Props) {
   };
   const chat = p.chats.find((c) => c.id === p.selected);
   const [addingTo, setAddingTo] = useState<string | null>(null);
-  // Group messages synced without their sender are asked for again once per
-  // visit; the resent copies fill in names as they arrive.
+  const [replyTo, setReplyTo] = useState<Message | null>(null),
+    [attachment, setAttachment] = useState<{ file: File; url: string } | null>(null),
+    [viewer, setViewer] = useState<{ message: Message; media: LoadedMedia } | null>(null),
+    [highlight, setHighlight] = useState<string | null>(null),
+    [dragging, setDragging] = useState(false),
+    [askedPhone, setAskedPhone] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  /** In a direct chat every incoming message is from the chat's person. */
+  const peer = chat?.type === "direct" ? chatTitle(chat) : undefined;
+  const pane = useRef<HTMLDivElement>(null);
+  /** Distance from the bottom to keep while older messages are added above. */
+  const keepFromBottom = useRef<number | null>(null);
+  // A reply or attachment belongs to the chat it was started in.
+  useEffect(() => {
+    setReplyTo(null);
+    setAttachment(null);
+    setViewer(null);
+    setAskedPhone(false);
+  }, [p.selected]);
+  useEffect(() => () => {
+    if (attachment) URL.revokeObjectURL(attachment.url);
+  }, [attachment]);
+  useEffect(() => {
+    if (!viewer && !replyTo && !attachment) return;
+    const close = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (viewer) setViewer(null);
+      else if (attachment) setAttachment(null);
+      else setReplyTo(null);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [viewer, replyTo, attachment]);
+  const attach = (file: File | null | undefined) => {
+    if (!file) return;
+    if (file.size > 16 * 1024 * 1024) {
+      p.notify("Files can be up to 16 MB.");
+      return;
+    }
+    setAttachment({ file, url: URL.createObjectURL(file) });
+    composer.current?.focus();
+  };
+  const actions: BubbleActions = {
+    reply: (m) => {
+      setReplyTo(m);
+      composer.current?.focus();
+    },
+    react: (m, emoji) =>
+      void p.act(() =>
+        request(`/v1/messages/${encodeURIComponent(m.id)}/react`, "POST", { emoji }),
+      ),
+    open: (message, media) => setViewer({ message, media }),
+    save: (m) =>
+      void p.act(async () => {
+        const { path } = await request<{ path: string }>(
+          `/internal/messages/${encodeURIComponent(m.id)}/save`,
+          "POST",
+        );
+        p.notify("Saved to " + path);
+      }),
+    jump: (id) => {
+      const el = document.getElementById("msg-" + id);
+      if (!el) {
+        p.notify("That message is further up. Scroll up to load older messages.");
+        return;
+      }
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      setHighlight(id);
+      setTimeout(() => setHighlight((h) => (h === id ? null : h)), 1600);
+    },
+  };
+  const loadOlder = () => {
+    const el = pane.current;
+    if (!el || !p.hasMore || keepFromBottom.current !== null) return;
+    keepFromBottom.current = el.scrollHeight - el.scrollTop;
+    p.loadOlder();
+  };
+  // Older messages are added above: keep the reader where they were.
+  useLayoutEffect(() => {
+    const el = pane.current;
+    if (el && keepFromBottom.current !== null) {
+      el.scrollTop = el.scrollHeight - keepFromBottom.current;
+      keepFromBottom.current = null;
+    }
+  }, [p.messages[0]?.id]);
+  useEffect(() => {
+    keepFromBottom.current = null;
+  }, [p.selected]);
+  // Group messages synced without their sender, and attachments stored before
+  // they could be downloaded, are asked for again once per visit; the resent
+  // copies fill in names and photos as they arrive.
   const repairRequested = useRef(new Set<string>());
-  const senderless = chat?.type === "group" && p.messages.some((m) => unknownSender(m));
+  const senderless =
+    (chat?.type === "group" && p.messages.some((m) => unknownSender(m))) ||
+    p.messages.some((m) => m.mediaAvailable === false && !m.deletedAt);
   useEffect(() => {
     if (!p.selected || !senderless || !p.connected) return;
     if (repairRequested.current.has(p.selected)) return;
@@ -123,12 +230,29 @@ export function Inbox(p: Props) {
     </div>
   );
   const send = () => {
-    if (!p.selected || !text.trim() || p.busy || !p.connected) return;
-    const id = p.selected, sentText = text;
+    if (!p.selected || p.busy || !p.connected) return;
+    if (!text.trim() && !attachment) return;
+    const id = p.selected, sentText = text, quoted = replyTo, file = attachment;
     nearBottom.current = true;
     return p.act(async () => {
-      await request("/v1/messages/send", "POST", { chatId: id, text: sentText });
+      if (file)
+        await request("/v1/messages/send-media", "POST", {
+          chatId: id,
+          data: await readFile(file.file),
+          mimetype: file.file.type || "application/octet-stream",
+          fileName: file.file.name,
+          caption: sentText.trim() || undefined,
+          replyTo: quoted?.id,
+        });
+      else
+        await request("/v1/messages/send", "POST", {
+          chatId: id,
+          text: sentText,
+          replyTo: quoted?.id,
+        });
       setCompositions((current) => current[id] === sentText ? { ...current, [id]: "" } : current);
+      setReplyTo((r) => (r === quoted ? null : r));
+      setAttachment((a) => (a === file ? null : a));
     });
   };
   return (
@@ -281,13 +405,53 @@ export function Inbox(p: Props) {
                 You review every send.
               </div>
             ) : null}
-            <div className="messages" aria-live="polite" onScroll={(e) => {
-              const pane = e.currentTarget;
-              nearBottom.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
-            }}>
-              {p.messages.length ? (
+            <div
+              ref={pane}
+              className={"messages" + (dragging ? " dragging" : "")}
+              aria-live="polite"
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                if (el.scrollTop < 120 && p.hasMore) loadOlder();
+              }}
+              onDragOver={(e) => {
+                if (!p.connected || !e.dataTransfer.types.includes("Files")) return;
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                setDragging(false);
+                if (!p.connected || !e.dataTransfer.files.length) return;
+                e.preventDefault();
+                attach(e.dataTransfer.files[0]);
+              }}
+            >
+              {p.hasMore ? (
+                <button className="text-button history-more" onClick={loadOlder}>
+                  Load earlier messages
+                </button>
+              ) : p.messages.length ? (
                 <div className="history-note">
-                  Recent messages stored on this device
+                  {p.connected ? (
+                    askedPhone ? (
+                      "Asked your phone for older messages. They appear here as they arrive."
+                    ) : (
+                      <button
+                        className="text-button"
+                        onClick={() => {
+                          setAskedPhone(true);
+                          void request(`/internal/chats/${encodeURIComponent(p.selected!)}/older`, "POST").catch(
+                            (e) => p.notify(String(e)),
+                          );
+                        }}
+                      >
+                        Get older messages from your phone
+                      </button>
+                    )
+                  ) : (
+                    "Start of messages stored on this device"
+                  )}
                 </div>
               ) : (
                 <div className="list-empty">
@@ -306,10 +470,15 @@ export function Inbox(p: Props) {
                       message={m}
                       group={chat?.type === "group"}
                       continued={!newDay && previous.direction === m.direction && !unknownSender(m) && who(previous) === who(m)}
+                      highlighted={highlight === m.id}
+                      canAct={p.connected && !p.busy}
+                      actions={actions}
+                      peer={peer}
                     />
                   </Fragment>
                 );
               })}
+              {dragging ? <div className="drop-hint">Drop a file to send it</div> : null}
               <div ref={bottom} />
             </div>
             {p.drafts.some((d) => d.status === "uncertain") ? (
@@ -383,6 +552,45 @@ export function Inbox(p: Props) {
                 </button>
               </div>
             ) : null}
+            {replyTo || attachment ? (
+              <div className="compose-context">
+                {replyTo ? (
+                  <div className="reply-bar">
+                    <div className="quote static">
+                      <strong>{senderLabel(replyTo, peer)}</strong>
+                      <span>{summary(replyTo)}</span>
+                    </div>
+                    <button className="icon-button" aria-label="Cancel reply" onClick={() => setReplyTo(null)}>✕</button>
+                  </div>
+                ) : null}
+                {attachment ? (
+                  <div className="attachment-preview">
+                    {attachment.file.type.startsWith("image/") ? (
+                      <img src={attachment.url} alt="" />
+                    ) : (
+                      <span className="media-icon" aria-hidden="true">
+                        {(attachment.file.name.split(".").pop() || "file").slice(0, 4).toUpperCase()}
+                      </span>
+                    )}
+                    <span className="media-text">
+                      <strong>{attachment.file.name || "Pasted image"}</strong>
+                      <small>
+                        {fileSize(attachment.file.size)} ·{" "}
+                        {/^image\/(jpeg|png|webp)$/.test(attachment.file.type)
+                          ? "Sends as a photo"
+                          : attachment.file.type === "video/mp4"
+                            ? "Sends as a video"
+                            : attachment.file.type.startsWith("audio/")
+                              ? "Sends as audio"
+                              : "Sends as a document"}
+                        {text.trim() ? " with your message as the caption" : ""}
+                      </small>
+                    </span>
+                    <button className="icon-button" aria-label="Remove attachment" onClick={() => setAttachment(null)}>✕</button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <form
               className="composer"
               onSubmit={(e) => {
@@ -390,19 +598,49 @@ export function Inbox(p: Props) {
                 void send();
               }}
             >
+              <input
+                ref={fileInput}
+                type="file"
+                className="visually-hidden"
+                tabIndex={-1}
+                aria-hidden="true"
+                onChange={(e) => {
+                  attach(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                className="icon-button attach-button"
+                title="Attach a photo, video or file"
+                aria-label="Attach a file"
+                disabled={!p.connected || p.busy}
+                onClick={() => fileInput.current?.click()}
+              >
+                <AttachIcon />
+              </button>
               <textarea
                 ref={composer}
                 rows={1}
                 aria-label="Message"
                 placeholder={
-                  p.connected
-                    ? "Write a message…"
-                    : "Connect WhatsApp to send a message"
+                  !p.connected
+                    ? "Connect WhatsApp to send a message"
+                    : attachment
+                      ? "Add a caption…"
+                      : "Write a message…"
                 }
                 value={text}
                 maxLength={10000}
                 disabled={!p.connected || p.busy}
                 onChange={(e) => setText(e.target.value)}
+                onPaste={(e) => {
+                  const file = [...e.clipboardData.files][0];
+                  if (file) {
+                    e.preventDefault();
+                    attach(file);
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (
                     e.key === "Enter" &&
@@ -410,17 +648,33 @@ export function Inbox(p: Props) {
                     !e.nativeEvent.isComposing
                   ) {
                     e.preventDefault();
-                    if (text.trim() && !p.busy && p.connected) void send();
+                    if ((text.trim() || attachment) && !p.busy && p.connected) void send();
                   }
                 }}
               />
               <button
                 type="submit"
-                disabled={p.busy || !p.connected || !text.trim()}
+                disabled={p.busy || !p.connected || (!text.trim() && !attachment)}
               >
                 <span aria-hidden="true">➤</span><span className="visually-hidden">Send message</span>
               </button>
             </form>
+            {viewer ? (
+              <div className="media-viewer" role="dialog" aria-modal="true" aria-label="Photo" onClick={() => setViewer(null)}>
+                <div className="media-viewer-bar" onClick={(e) => e.stopPropagation()}>
+                  <span>
+                    <strong>{senderLabel(viewer.message, peer)}</strong>
+                    <small>{new Date(viewer.message.timestamp).toLocaleString()}</small>
+                  </span>
+                  <button className="icon-button" title="Save to Downloads" aria-label="Save photo to Downloads" onClick={() => actions.save(viewer.message)}>
+                    <DownloadIcon />
+                  </button>
+                  <button className="icon-button" aria-label="Close photo" onClick={() => setViewer(null)}>✕</button>
+                </div>
+                <img src={viewer.media.url} alt={viewer.message.text || "Photo"} onClick={(e) => e.stopPropagation()} />
+                {viewer.message.text ? <p onClick={(e) => e.stopPropagation()}>{viewer.message.text}</p> : null}
+              </div>
+            ) : null}
           </>
         ) : (
           <div className="conversation-empty">
@@ -443,82 +697,4 @@ function AddPersonIcon() {
 }
 function PinIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5-4 1-3 5v3l-7-7h3l5-3zM9 15l-6 6" /></svg>;
-}
-/** Stored without its sender, so it reads as sent by the group itself. */
-function unknownSender(m: Message) {
-  return m.direction === "incoming" && m.senderId === m.chatId;
-}
-/** One person, whether a message names them by LID or by phone number. */
-function who(m: Message) {
-  return m.senderPhone || m.senderId;
-}
-/** A stable hue per sender, so each person keeps one colour in a group. */
-function senderHue(id: string) {
-  let hash = 0;
-  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-  return Math.abs(hash) % 360;
-}
-function MessageBubble({
-  message: m,
-  group,
-  continued,
-}: {
-  message: Message;
-  group?: boolean;
-  /** Same sender as the message above, so the name and avatar are not repeated. */
-  continued?: boolean;
-}) {
-  const bubble = (
-    <article className={"message " + m.direction}>
-      {m.direction === "incoming" && group && !continued ? (
-        <MessageSender message={m} />
-      ) : null}
-      {m.type !== "text" ? (
-        <div className="media-label">
-          [{m.type} · attachment preview unavailable]
-        </div>
-      ) : null}
-      <p>{m.text}</p>
-      <time>
-        {new Date(m.timestamp).toLocaleTimeString(undefined, {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}
-        {m.direction === "outgoing" ? " · You" : ""}
-      </time>
-    </article>
-  );
-  if (m.direction !== "incoming" || !group) return bubble;
-  const name = senderLabel(m);
-  return (
-    <div
-      className={"message-row" + (continued ? " continued" : "")}
-      style={{ "--sender-hue": senderHue(who(m)) } as CSSProperties}
-    >
-      {continued ? (
-        <span className="sender-avatar spacer" aria-hidden="true" />
-      ) : (
-        <span className="sender-avatar" aria-hidden="true" title={name}>
-          {m.senderName ? initials(m.senderName) : "?"}
-        </span>
-      )}
-      {bubble}
-    </div>
-  );
-}
-/** The sender's number; a LID is not a phone number, so it is never shown as one. */
-function senderPhone(m: Message) {
-  return m.senderPhone ? phoneLabel(m.senderPhone) : null;
-}
-function senderLabel(m: Message) {
-  return m.senderName || senderPhone(m) || "Unknown member";
-}
-function MessageSender({ message: m }: { message: Message }) {
-  const phone = senderPhone(m);
-  return (
-    <div className="message-sender" title={m.senderId}>
-      <strong>{senderLabel(m)}</strong>
-      {m.senderName && phone ? <small>{phone}</small> : null}
-    </div>
-  );
 }

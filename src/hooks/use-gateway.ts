@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { request, type Snapshot } from "../lib/api";
-export function useGateway(profile: string, chatId: string | null) {
+/** `limit` is how many of the open chat's latest messages to keep loaded. */
+export function useGateway(profile: string, chatId: string | null, limit = 50) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
     [error, setError] = useState("");
   const selected = useRef(chatId);
@@ -8,13 +9,16 @@ export function useGateway(profile: string, chatId: string | null) {
   const current = useRef(profile);
   current.current = profile;
   const generation = useRef(0);
+  const size = useRef(limit);
+  size.current = limit;
   const refresh = useCallback(async () => {
     const id = selected.current,
       p = current.current;
     const version = ++generation.current;
     try {
       const next = await request<Snapshot>(
-        "/internal/snapshot" + (id ? "?chatId=" + encodeURIComponent(id) : ""),
+        "/internal/snapshot" +
+          (id ? "?chatId=" + encodeURIComponent(id) + "&limit=" + size.current : ""),
         "GET",
         undefined,
         p,
@@ -49,6 +53,6 @@ export function useGateway(profile: string, chatId: string | null) {
       ++generation.current;
       clearTimeout(timer);
     };
-  }, [profile, chatId, refresh]);
+  }, [profile, chatId, limit, refresh]);
   return { snapshot, error, refresh };
 }

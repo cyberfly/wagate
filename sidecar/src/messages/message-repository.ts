@@ -1,20 +1,53 @@
 import type { Database } from "bun:sqlite";
-import type { Message, MessagePage } from "../messaging/types";
+import type {
+  Message,
+  MessageChange,
+  MessagePage,
+  MessageReceipt,
+  MessageStatus,
+  QuotedMessage,
+  Reaction,
+  ReactionUpdate,
+  ReceivedMessage,
+} from "../messaging/types";
+import type { StoredMessage } from "../messaging/messaging-provider";
 import { ChatRepository } from "../chats/chat-repository";
 // A LID sender is looked up through its phone number too: names saved in your
 // phone are stored under the number.
 const columns = `m.id,m.provider,m.provider_message_id AS providerMessageId,m.chat_id AS chatId,m.sender_id AS senderId,
  COALESCE(p.name,k.name,k.push_name,p.push_name) AS senderName,
  CASE WHEN m.sender_id LIKE '%@s.whatsapp.net' THEN m.sender_id ELSE l.phone END AS senderPhone,
- m.direction,m.type,m.text,m.timestamp`;
+ m.direction,m.type,m.text,m.timestamp,m.media,m.quoted,m.status,m.edited_at AS editedAt,m.deleted_at AS deletedAt,
+ m.media_source IS NOT NULL AS mediaAvailable`;
 const from = `messages m LEFT JOIN contacts k ON k.id=m.sender_id
  LEFT JOIN lid_phones l ON l.lid=m.sender_id LEFT JOIN contacts p ON p.id=l.phone`;
+/** Later statuses only: a late delivery receipt never undoes a read. */
+const rank: Record<MessageStatus, number> = {
+  pending: 0,
+  sent: 1,
+  delivered: 2,
+  read: 3,
+  failed: 4,
+};
+type Row = Omit<Message, "media" | "quoted" | "mediaAvailable"> & {
+  media: string | null;
+  quoted: string | null;
+  mediaAvailable: number;
+};
+function parse<T>(json: string | null): T | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return null;
+  }
+}
 export class MessageRepository {
   constructor(
     private db: Database,
     private chats: ChatRepository,
   ) {}
-  save(message: Message) {
+  save(message: ReceivedMessage) {
     return this.db.transaction(() => {
       this.chats.upsert({
         id: message.chatId,
@@ -23,9 +56,14 @@ export class MessageRepository {
         type: message.chatId.endsWith("@g.us") ? "group" : "direct",
         lastMessageAt: message.timestamp,
       });
-      const inserted = this.db
+      const media = message.media ? JSON.stringify(message.media) : null,
+        source = message.mediaSource ?? null,
+        quoted = message.quoted ? JSON.stringify(message.quoted) : null;
+      const inserted =
+        this.db
           .query(
-            `INSERT OR IGNORE INTO messages(id,provider,provider_message_id,chat_id,sender_id,direction,type,text,timestamp,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT OR IGNORE INTO messages(id,provider,provider_message_id,chat_id,sender_id,direction,type,text,timestamp,created_at,media,media_source,quoted,status,deleted_at)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             message.id,
@@ -38,40 +76,229 @@ export class MessageRepository {
             message.text ?? null,
             message.timestamp,
             Date.now(),
+            media,
+            source,
+            quoted,
+            message.status ?? null,
+            message.deletedAt ?? null,
           ).changes > 0;
-      // Group history was once stored without its sender, which then read as
-      // the group itself. A later copy of the same message can fill it in.
-      if (!inserted && message.senderId !== message.chatId)
+      if (!inserted) {
+        // Group history was once stored without its sender, which then read as
+        // the group itself. A later copy of the same message can fill it in.
+        if (message.senderId !== message.chatId)
+          this.db
+            .query(
+              `UPDATE messages SET sender_id=? WHERE id=? AND sender_id=chat_id AND chat_id LIKE '%@g.us'`,
+            )
+            .run(message.senderId, message.id);
+        // Messages stored before attachments and replies were kept gain them
+        // from any later copy.
         this.db
           .query(
-            `UPDATE messages SET sender_id=? WHERE id=? AND sender_id=chat_id AND chat_id LIKE '%@g.us'`,
+            `UPDATE messages SET media=COALESCE(media,?),media_source=COALESCE(media_source,?),quoted=COALESCE(quoted,?),
+             type=CASE WHEN type='unknown' THEN ? ELSE type END,text=COALESCE(text,?) WHERE id=? AND deleted_at IS NULL`,
           )
-          .run(message.senderId, message.id);
+          .run(media, source, quoted, message.type, message.text ?? null, message.id);
+        if (message.status) this.setStatus(message.providerMessageId, message.status);
+      }
       return inserted;
     })();
   }
+  /** Moves our message's status forward; returns whether it changed. */
+  setStatus(providerMessageId: string, status: MessageStatus) {
+    const rows = this.db
+      .query(
+        `SELECT id,status FROM messages WHERE provider_message_id=? AND direction='outgoing'`,
+      )
+      .all(providerMessageId) as { id: string; status: MessageStatus | null }[];
+    let changed = false;
+    for (const row of rows)
+      if (!row.status || rank[status] > rank[row.status]) {
+        this.db.query(`UPDATE messages SET status=? WHERE id=?`).run(status, row.id);
+        changed = true;
+      }
+    return changed;
+  }
+  receipt(receipt: MessageReceipt) {
+    return this.setStatus(receipt.providerMessageId, receipt.status);
+  }
+  /** Records a reaction, or removes one for an empty emoji; returns the chat it is in. */
+  react(reaction: ReactionUpdate) {
+    if (reaction.emoji)
+      this.db
+        .query(
+          `INSERT INTO reactions(provider_message_id,sender_id,emoji,timestamp) VALUES(?,?,?,?)
+           ON CONFLICT(provider_message_id,sender_id) DO UPDATE SET emoji=excluded.emoji,timestamp=excluded.timestamp
+           WHERE excluded.timestamp>=reactions.timestamp`,
+        )
+        .run(reaction.providerMessageId, reaction.senderId, reaction.emoji, reaction.timestamp);
+    else
+      this.db
+        .query(`DELETE FROM reactions WHERE provider_message_id=? AND sender_id=? AND timestamp<=?`)
+        .run(reaction.providerMessageId, reaction.senderId, reaction.timestamp);
+    return this.chatOf(reaction.providerMessageId);
+  }
+  /** Applies an edit or a delete for everyone; returns the chat it is in. */
+  change(change: MessageChange) {
+    if (change.kind === "delete") {
+      this.db
+        .query(
+          `UPDATE messages SET deleted_at=?,text=NULL,media=NULL,media_source=NULL WHERE provider_message_id=?`,
+        )
+        .run(change.timestamp, change.providerMessageId);
+      this.db
+        .query(
+          `DELETE FROM media_cache WHERE message_id IN (SELECT id FROM messages WHERE provider_message_id=?)`,
+        )
+        .run(change.providerMessageId);
+    } else
+      this.db
+        .query(
+          `UPDATE messages SET text=?,edited_at=? WHERE provider_message_id=? AND deleted_at IS NULL`,
+        )
+        .run(change.text ?? null, change.timestamp, change.providerMessageId);
+    return this.chatOf(change.providerMessageId);
+  }
+  private chatOf(providerMessageId: string) {
+    return (
+      (
+        this.db
+          .query(`SELECT chat_id AS chatId FROM messages WHERE provider_message_id=? LIMIT 1`)
+          .get(providerMessageId) as { chatId: string } | null
+      )?.chatId ?? null
+    );
+  }
+  /** What the provider needs to quote, react to or download a message. */
+  source(id: string): (StoredMessage & { id: string; deletedAt: number | null; mimetype?: string }) | null {
+    const row = this.db
+      .query(
+        `SELECT id,chat_id AS chatId,provider_message_id AS providerMessageId,direction,sender_id AS senderId,type,text,
+         media_source AS mediaSource,media,deleted_at AS deletedAt FROM messages WHERE id=?`,
+      )
+      .get(id) as
+      | (StoredMessage & { id: string; media: string | null; deletedAt: number | null })
+      | null;
+    if (!row) return null;
+    const { media, ...rest } = row;
+    return {
+      ...rest,
+      text: rest.text ?? undefined,
+      mediaSource: rest.mediaSource ? new Uint8Array(rest.mediaSource) : null,
+      mimetype: parse<{ mimetype?: string }>(media)?.mimetype,
+    };
+  }
+  cachedMedia(id: string) {
+    const row = this.db
+      .query(`SELECT mimetype,data FROM media_cache WHERE message_id=?`)
+      .get(id) as { mimetype: string; data: Uint8Array } | null;
+    return row ? { mimetype: row.mimetype, data: new Uint8Array(row.data) } : null;
+  }
+  cacheMedia(id: string, mimetype: string, data: Uint8Array) {
+    this.db
+      .query(
+        `INSERT OR REPLACE INTO media_cache(message_id,mimetype,data,created_at) VALUES(?,?,?,?)`,
+      )
+      .run(id, mimetype, data, Date.now());
+  }
   /**
-   * The newest message of a group whose stored page has messages without a
-   * sender, or null when every sender is known.
+   * The chat's newest message when its latest page needs a fresh copy from
+   * WhatsApp: group messages stored without a sender, or attachments stored
+   * before they could be downloaded. Null when nothing needs repair.
    */
   senderRepairAnchor(chatId: string) {
-    const unknown = this.db
+    const group = chatId.endsWith("@g.us");
+    const broken = this.db
       .query(
-        `SELECT 1 FROM (SELECT sender_id,chat_id,direction FROM messages WHERE chat_id=? ORDER BY timestamp DESC,id DESC LIMIT 50)
-         WHERE sender_id=chat_id AND direction='incoming' LIMIT 1`,
+        `SELECT 1 FROM (SELECT sender_id,chat_id,direction,type,media_source,deleted_at FROM messages WHERE chat_id=?1 ORDER BY timestamp DESC,id DESC LIMIT 50)
+         WHERE (?2 AND sender_id=chat_id AND direction='incoming')
+            OR (type IN ('image','video','audio','document','sticker') AND media_source IS NULL AND deleted_at IS NULL) LIMIT 1`,
       )
-      .get(chatId);
-    if (!unknown || !chatId.endsWith("@g.us")) return null;
-    return this.db
+      .get(chatId, group ? 1 : 0);
+    if (!broken) return null;
+    const row = this.db
       .query(
         `SELECT ${columns} FROM ${from} WHERE m.chat_id=? ORDER BY m.timestamp DESC,m.id DESC LIMIT 1`,
       )
-      .get(chatId) as Message | null;
+      .get(chatId) as Row | null;
+    return row ? this.hydrate([row])[0]! : null;
+  }
+  /** The chat's earliest stored message, to ask the phone for what came before. */
+  oldest(chatId: string) {
+    const row = this.db
+      .query(
+        `SELECT ${columns} FROM ${from} WHERE m.chat_id=? ORDER BY m.timestamp,m.id LIMIT 1`,
+      )
+      .get(chatId) as Row | null;
+    return row ? this.hydrate([row])[0]! : null;
   }
   get(id: string) {
-    return this.db
+    const row = this.db
       .query(`SELECT ${columns} FROM ${from} WHERE m.id=?`)
-      .get(id) as Message | null;
+      .get(id) as Row | null;
+    return row ? this.hydrate([row])[0]! : null;
+  }
+  /** Parses stored JSON and adds reactions and the quoted message's details. */
+  private hydrate(rows: Row[]): Message[] {
+    if (!rows.length) return [];
+    const ids = rows.map((r) => r.providerMessageId);
+    const marks = ids.map(() => "?").join(",");
+    const reactions = new Map<string, Reaction[]>();
+    for (const r of this.db
+      .query(
+        `SELECT provider_message_id AS id,emoji,COUNT(*) AS count,MAX(sender_id='me') AS mine,MIN(timestamp) AS first
+         FROM reactions WHERE provider_message_id IN (${marks}) GROUP BY provider_message_id,emoji ORDER BY count DESC,first`,
+      )
+      .all(...ids) as { id: string; emoji: string; count: number; mine: number }[]) {
+      const list = reactions.get(r.id) ?? [];
+      list.push({ emoji: r.emoji, count: r.count, mine: !!r.mine });
+      reactions.set(r.id, list);
+    }
+    const quotedLookup = this.db.query(
+      `SELECT m.id,m.direction,m.type,m.text,m.deleted_at AS deletedAt,COALESCE(p.name,k.name,k.push_name,p.push_name) AS senderName
+       FROM ${from} WHERE m.chat_id=? AND m.provider_message_id=?`,
+    );
+    const nameLookup = this.db.query(
+      `SELECT COALESCE(p.name,k.name,k.push_name,p.push_name) AS name FROM (SELECT ? AS id) s
+       LEFT JOIN contacts k ON k.id=s.id LEFT JOIN lid_phones l ON l.lid=s.id LEFT JOIN contacts p ON p.id=l.phone`,
+    );
+    return rows.map((row) => {
+      const message: Message = {
+        ...row,
+        media: parse(row.media),
+        mediaAvailable: !!row.mediaAvailable,
+        quoted: null,
+        reactions: reactions.get(row.providerMessageId) ?? [],
+      };
+      const quoted = parse<QuotedMessage>(row.quoted);
+      if (quoted) {
+        // The stored copy is current: it reflects edits, deletion and names.
+        const stored = quotedLookup.get(row.chatId, quoted.providerMessageId) as {
+          id: string;
+          direction: Message["direction"];
+          type: Message["type"];
+          text: string | null;
+          deletedAt: number | null;
+          senderName: string | null;
+        } | null;
+        message.quoted = stored
+          ? {
+              ...quoted,
+              messageId: stored.id,
+              fromMe: stored.direction === "outgoing",
+              type: stored.type,
+              text: stored.deletedAt ? undefined : (stored.text ?? quoted.text)?.slice(0, 500),
+              senderName: stored.senderName,
+            }
+          : {
+              ...quoted,
+              messageId: null,
+              senderName: quoted.senderId
+                ? ((nameLookup.get(quoted.senderId) as { name: string | null } | null)?.name ?? null)
+                : null,
+            };
+      }
+      return message;
+    });
   }
   page(chatId: string, limit = 50, cursor?: string): MessagePage {
     let before: { timestamp: number; id: string } | undefined;
@@ -106,9 +333,9 @@ export class MessageRepository {
               `SELECT ${columns} FROM ${from} WHERE m.chat_id=? ORDER BY m.timestamp DESC,m.id DESC LIMIT ?`,
             )
             .all(chatId, limit + 1)
-    ) as Message[];
+    ) as Row[];
     const hasMore = rows.length > limit;
-    const page = rows.slice(0, limit);
+    const page = this.hydrate(rows.slice(0, limit));
     const last = page.at(-1);
     return {
       messages: page.reverse(),
