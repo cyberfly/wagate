@@ -733,7 +733,7 @@ main {
 .settings-panel {
   padding: 28px;
 }
-.settings-panel input:not([type="checkbox"]),
+.settings-panel input:not([type="checkbox"]):not([type="radio"]),
 .settings-panel textarea {
   width: 100%;
   font-size: 12px;
@@ -3619,4 +3619,366 @@ nav button:hover { color: #d7dae0; }
   display: flex;
   justify-content: space-between;
   gap: 12px;
+}
+
+/* Profiles: which WhatsApp number the app is working with. */
+.profile-switcher {
+  position: relative;
+  margin-top: 26px;
+}
+.profile-switcher + .workspace-label {
+  margin-top: 26px;
+}
+.profile-current,
+.profile-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  color: #abb2bf;
+  background: #2c313a;
+  border: 1px solid #3e4451;
+  border-radius: 8px;
+  box-shadow: none;
+  font-weight: 450;
+}
+.profile-current:hover,
+.profile-option:hover {
+  color: #d7dae0;
+  background: #3e4451;
+  box-shadow: none;
+}
+.profile-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: #61afef;
+  background: #303849;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.profile-avatar.small {
+  width: 26px;
+  height: 26px;
+  font-size: 10px;
+}
+.profile-avatar .dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid #21252b;
+}
+.dot.attention {
+  background: #e5c07b;
+}
+.dot.idle {
+  background: #5c6370;
+}
+.profile-text {
+  flex: 1;
+  min-width: 0;
+}
+.profile-text strong,
+.profile-text small {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.profile-text strong {
+  color: #d7dae0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.profile-text small {
+  margin-top: 2px;
+  color: #7f848e;
+  font-size: 11px;
+}
+.profile-caret,
+.profile-check {
+  flex-shrink: 0;
+  color: #7f848e;
+  font-size: 12px;
+}
+.profile-check {
+  color: #98c379;
+}
+.profile-menu {
+  position: absolute;
+  z-index: 200;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 270px;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  color: #abb2bf;
+  background: #2c313a;
+  border: 1px solid #4b5263;
+  border-radius: 8px;
+  box-shadow: 0 14px 32px #00000080;
+}
+.profile-menu-label {
+  padding: 4px 8px 6px;
+  color: #7f848e;
+  font-size: 9px;
+  letter-spacing: 1.6px;
+}
+.profile-option {
+  background: transparent;
+  border-color: transparent;
+}
+.profile-option.active {
+  background: #3e4451;
+}
+.profile-menu-actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #3e4451;
+}
+.profile-menu-actions .text-button {
+  font-size: 12px;
+}
+.profile-add {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 6px 2px;
+  border-top: 1px solid #3e4451;
+}
+.profile-add label {
+  margin: 0;
+  font-size: 12px;
+}
+.profile-add input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.profile-add .inline-error {
+  margin: 0;
+}
+.profile-add .button-row {
+  margin-top: 4px;
+}
+/* The compact rail keeps only the avatar; the menu opens beside it. */
+.app-shell.sidebar-minimized .profile-switcher {
+  width: 100%;
+  margin-top: 14px;
+}
+.app-shell.sidebar-minimized .profile-current {
+  position: relative;
+  justify-content: center;
+  padding: 6px 0;
+  background: transparent;
+  border-color: transparent;
+}
+.app-shell.sidebar-minimized .profile-current > .profile-text,
+.app-shell.sidebar-minimized .profile-current > .profile-caret {
+  display: none;
+}
+.app-shell.sidebar-minimized .profile-menu {
+  top: 0;
+  left: calc(100% + 10px);
+}
+.app-shell.sidebar-minimized .profile-switcher + .workspace-label {
+  display: none;
+}
+.app-shell.sidebar-minimized .profile-current .sidebar-tooltip {
+  position: absolute;
+  z-index: 100;
+  left: calc(100% + 12px);
+  top: 50%;
+  display: block;
+  width: max-content;
+  max-width: 190px;
+  padding: 7px 10px;
+  border: 1px solid #4b5263;
+  border-radius: 5px;
+  color: #abb2bf;
+  background: #2c313a;
+  box-shadow: 0 8px 18px #00000073;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-5px, -50%);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  visibility: hidden;
+}
+.app-shell.sidebar-minimized .profile-current:hover .sidebar-tooltip,
+.app-shell.sidebar-minimized .profile-current:focus-visible .sidebar-tooltip {
+  opacity: 1;
+  transform: translate(0, -50%);
+  visibility: visible;
+}
+.app-shell.sidebar-minimized .profile-current[aria-expanded="true"] .sidebar-tooltip {
+  display: none;
+}
+@media (max-width: 760px) {
+  .automation-shell:not(.sidebar-minimized) .profile-current > .profile-text,
+  .automation-shell:not(.sidebar-minimized) .profile-current > .profile-caret {
+    display: none;
+  }
+  .automation-shell:not(.sidebar-minimized) .profile-current {
+    justify-content: center;
+    padding: 6px 0;
+    background: transparent;
+    border-color: transparent;
+  }
+  .automation-shell:not(.sidebar-minimized) .profile-menu {
+    top: 0;
+    left: calc(100% + 10px);
+  }
+}
+@media (max-width: 700px) {
+  .app-shell.sidebar-minimized .profile-menu {
+    left: calc(100% + 6px);
+  }
+  .inbox-shell:not(.sidebar-minimized) .profile-current > .profile-text,
+  .inbox-shell:not(.sidebar-minimized) .profile-current > .profile-caret {
+    display: none;
+  }
+  .inbox-shell:not(.sidebar-minimized) .profile-current {
+    justify-content: center;
+    padding: 6px 0;
+    background: transparent;
+    border-color: transparent;
+  }
+  .inbox-shell:not(.sidebar-minimized) .profile-menu {
+    top: 0;
+    left: calc(100% + 10px);
+  }
+}
+
+/* Managing numbers, under the WhatsApp connection. */
+.profiles-panel {
+  margin: 0 10px 30px;
+  padding: 26px 28px;
+}
+.profiles-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 18px 32px;
+}
+.profiles-head > div {
+  flex: 1 1 340px;
+}
+.profiles-head h2 {
+  margin: 8px 0 6px;
+}
+.profiles-head p {
+  margin: 0;
+  max-width: 560px;
+}
+.profile-create {
+  flex: 0 1 320px;
+  display: grid;
+  gap: 6px;
+}
+.profile-create label {
+  margin: 0;
+  font-size: 12px;
+}
+.profile-create-row,
+.profile-rename {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.profile-create-row input,
+.profile-rename input {
+  flex: 1;
+  min-width: 0;
+}
+.profiles-panel .alert {
+  margin: 18px 0 0;
+}
+.profile-list {
+  display: grid;
+  gap: 8px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.profile-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 12px 14px;
+  border: 1px solid #3e4451;
+  border-radius: 8px;
+  background: #282c34;
+}
+.profile-row.active {
+  border-color: #61afef66;
+  background: #2c313a;
+}
+.profile-row .profile-text strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: visible;
+}
+.profile-row .chip {
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.profile-row .profile-text .inline-error {
+  white-space: normal;
+}
+.profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.profile-actions .secondary {
+  padding: 6px 12px;
+}
+.profile-actions .text-button {
+  font-size: 12px;
+}
+.profile-row .confirm-box {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+}
+.scope-profiles {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 0 24px;
+}
+.checkbox input[type="radio"] {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+.profile-current,
+.profile-option,
+.profile-menu {
+  box-sizing: border-box;
+}
+.profile-menu-actions .text-button {
+  white-space: nowrap;
+}
+.profile-menu {
+  width: 296px;
+}
+.profile-menu-actions {
+  gap: 4px;
 }

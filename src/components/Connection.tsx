@@ -4,13 +4,17 @@ import {
   statusLabel,
   displayName,
   type ConnectionState,
+  type Profile,
 } from "../lib/api";
 export function Connection({
   state,
+  profile,
   busy,
   act,
 }: {
   state?: ConnectionState;
+  /** The profile this connection belongs to. */
+  profile?: Profile;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
@@ -20,18 +24,28 @@ export function Connection({
   return (
     <section className="connection-layout">
       <div>
-        <span className="eyebrow">ONE ACCOUNT. ON YOUR DEVICE.</span>
-        <h2>Connect your WhatsApp</h2>
+        <span className="eyebrow">
+          {profile ? `PROFILE · ${profile.name.toUpperCase()}` : "ON YOUR DEVICE"}
+        </span>
+        <h2>
+          {profile && !profile.isDefault
+            ? `Connect “${profile.name}”`
+            : "Connect your WhatsApp"}
+        </h2>
         <p className="muted">
-          Your conversations stay on this computer. Link your account to start
-          receiving and sending messages.
+          Your conversations stay on this computer. Link the account for this
+          profile to start receiving and sending messages. Each profile links
+          one number; add more from the sidebar.
         </p>
         <ol className="steps">
           <li>
             <span>1</span>
             <div>
               <strong>Open WhatsApp on your phone</strong>
-              <p>Use the account you want to connect.</p>
+              <p>
+                Use the number you want in{" "}
+                {profile ? `“${profile.name}”` : "this profile"}.
+              </p>
             </div>
           </li>
           <li>

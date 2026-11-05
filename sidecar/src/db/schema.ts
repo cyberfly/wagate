@@ -140,6 +140,19 @@ export const lidPhonesSchema = `
 CREATE TABLE lid_phones (lid TEXT PRIMARY KEY, phone TEXT NOT NULL, updated_at INTEGER NOT NULL);
 PRAGMA user_version = 9;
 `;
+// Profiles let one Wagate run several WhatsApp numbers. The database in the
+// data directory is the main profile's and also holds what every profile
+// shares: API keys, AI settings, and this list. Each further profile keeps its
+// chats, messages and WhatsApp session in its own database under profiles/.
+// An API key's profiles is a JSON array of profile ids; NULL means every one.
+export const profilesSchema = `
+CREATE TABLE profiles (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, account TEXT, created_at INTEGER NOT NULL
+);
+INSERT INTO profiles(id,name,created_at) VALUES('default','Main',0);
+ALTER TABLE api_keys ADD COLUMN profiles TEXT;
+PRAGMA user_version = 10;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -151,4 +164,5 @@ export const migrations = [
   inboxPinsSchema,
   groupAutomationSchema,
   lidPhonesSchema,
+  profilesSchema,
 ];

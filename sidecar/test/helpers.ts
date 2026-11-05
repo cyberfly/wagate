@@ -1,21 +1,13 @@
 import { openDatabase } from "../src/db/database";
-import { ChatRepository } from "../src/chats/chat-repository";
-import { MessageRepository } from "../src/messages/message-repository";
-import { MessageService } from "../src/messages/message-service";
 import { EventBus } from "../src/events/event-bus";
 import { Settings } from "../src/config/settings";
 import { ApiKeys } from "../src/security/api-keys";
 import { Vault } from "../src/security/vault";
-import { DraftRepository } from "../src/ai/draft-repository";
-import { CopilotService } from "../src/ai/copilot-service";
 import { createApi } from "../src/api/server";
+import { ProfileManager } from "../src/profiles/profile-manager";
+import { ProfileRuntime } from "../src/profiles/profile-runtime";
 import { TunnelService } from "../src/tunnel/tunnel-service";
-import { BroadcastRepository } from "../src/broadcast/broadcast-repository";
-import { BroadcastService } from "../src/broadcast/broadcast-service";
-import { ContactRepository } from "../src/contacts/contact-repository";
 import { AutomationRepository } from "../src/automation/automation-repository";
-import { AutomationService } from "../src/automation/automation-service";
-import { GroupImportService } from "../src/groups/group-import-service";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type { MessagingProvider } from "../src/messaging/messaging-provider";
 import type {
@@ -108,69 +100,63 @@ export class FakeProvider implements MessagingProvider {
 }
 export function setup(ai?: AIProvider) {
   const db = openDatabase(":memory:");
-  const events = new EventBus(),
-    chats = new ChatRepository(db),
-    messages = new MessageRepository(db, chats),
-    settings = new Settings(db),
+  const settings = new Settings(db),
     keys = new ApiKeys(db),
-    drafts = new DraftRepository(db),
-    provider = new FakeProvider(),
     vault = new Vault(db, Buffer.alloc(32, 1));
-  const sender = new MessageService(provider, messages, events);
   const requests: AIRequest[] = [];
-  const copilot = new CopilotService(
-    ai || {
-      generate: async (request) => {
-        requests.push(request);
-        return "Yes, tomorrow works.";
-      },
+  const fakeAi: AIProvider = ai || {
+    generate: async (request) => {
+      requests.push(request);
+      return "Yes, tomorrow works.";
     },
+  };
+  /** Each profile's fake connection, by profile id. */
+  const providers = new Map<string, FakeProvider>();
+  /** Profiles removed so far; their databases are in-memory and just closed. */
+  const destroyed: string[] = [];
+  const profiles = new ProfileManager(db, {
+    open: () => openDatabase(":memory:"),
+    destroy: (id) => destroyed.push(id),
+    removed: (id) => keys.forgetProfile(id),
+    log: () => {},
+    logoutTimeout: 50,
+    runtime: (id, profileDb) =>
+      new ProfileRuntime({
+        id,
+        db: profileDb,
+        ai: fakeAi,
+        aiSettings: settings,
+        log: () => {},
+        provider: () => {
+          const provider = new FakeProvider();
+          providers.set(id, provider);
+          return provider;
+        },
+        // No pacing in tests: the next send is scheduled on the next timer tick.
+        pace: { broadcast: () => 0, groupImport: () => 0 },
+      }),
+  });
+  profiles.load();
+  const main = profiles.main();
+  const {
+    events,
     chats,
     messages,
-    sender,
     drafts,
-    settings,
-    events,
-  );
-  const contacts = new ContactRepository(db);
-  // No pacing in tests: the next send is scheduled on the next timer tick.
-  const broadcasts = new BroadcastService(
-    new BroadcastRepository(db),
     sender,
-    provider,
-    events,
-    () => 0,
-  );
-  const groupImports = new GroupImportService(provider, events, () => 0);
-  const automationRepository = new AutomationRepository(db);
-  const automations = new AutomationService(
-    automationRepository,
-    ai || {
-      generate: async (request) => {
-        requests.push(request);
-        return "A useful community tip.";
-      },
-    },
-    provider,
-    sender,
-    chats,
-    settings,
-    events,
-  );
-  const services = {
-    provider,
-    keys,
-    chats,
-    messages,
-    sender,
-    events,
-    settings,
-    vault: async () => vault,
-    drafts,
     copilot,
     broadcasts,
     automations,
     groupImports,
+    contacts,
+  } = main;
+  const provider = main.provider as FakeProvider;
+  const automationRepository = new AutomationRepository(db);
+  const services = {
+    profiles,
+    keys,
+    settings,
+    vault: async () => vault,
     port: 8787,
     databaseHealthy: () => true,
     log: () => {},
@@ -182,7 +168,7 @@ export function setup(ai?: AIProvider) {
   });
   const tunnel = new TunnelService({
     dataDir: "/nonexistent",
-    events,
+    events: new EventBus(),
     log: () => {},
     fetch: publicApp.fetch,
   });
@@ -225,15 +211,16 @@ export function setup(ai?: AIProvider) {
     automationRepository,
     contacts,
     requests,
+    profiles,
+    providers,
+    destroyed,
     app,
     publicApp,
     tunnel,
     call,
     close: () => {
-      copilot.close();
-      broadcasts.close();
-      automations.close();
       tunnel.close();
+      void profiles.close();
       db.close();
     },
   };

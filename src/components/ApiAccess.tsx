@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
-import { request, tunnelLabel, type TunnelState } from "../lib/api";
+import {
+  request,
+  tunnelLabel,
+  type Profile,
+  type TunnelState,
+} from "../lib/api";
 interface Key {
   id: string;
   name: string;
   permissions: string;
+  /** JSON array of profile ids, or null for every profile. */
+  profiles: string | null;
   createdAt: number;
   lastUsedAt: number | null;
   revokedAt: number | null;
@@ -13,10 +20,12 @@ export function ApiAccess({
   act,
   busy,
   tunnel,
+  profiles,
 }: {
   act: (fn: () => Promise<unknown>) => Promise<void>;
   busy: boolean;
   tunnel: TunnelState | null | undefined;
+  profiles: Profile[];
 }) {
   const [keys, setKeys] = useState<Key[]>([]),
     [name, setName] = useState(""),
@@ -25,10 +34,20 @@ export function ApiAccess({
       "messages.read",
     ]),
     [created, setCreated] = useState(""),
+    /** null: every number, including ones added later. */
+    [scope, setScope] = useState<string[] | null>(null),
     [port, setPort] = useState(8787),
     [copied, setCopied] = useState(false),
     [error, setError] = useState("");
   const active = keys.some((k) => !k.revokedAt);
+  const many = profiles.length > 1;
+  const names = (key: Key) => {
+    if (!key.profiles) return "All numbers";
+    const ids: string[] = JSON.parse(key.profiles);
+    return ids
+      .map((id) => profiles.find((p) => p.id === id)?.name ?? "Removed number")
+      .join(", ");
+  };
   const working =
     tunnel?.status === "starting" || tunnel?.status === "installing";
   const load = async () => {
@@ -64,10 +83,11 @@ export function ApiAccess({
               const result = await request<{ key: string }>(
                 "/internal/keys",
                 "POST",
-                { name, permissions: selected },
+                { name, permissions: selected, profiles: scope },
               );
               setCreated(result.key);
               setName("");
+              setScope(null);
               await load();
             });
           }}
@@ -100,7 +120,54 @@ export function ApiAccess({
               </label>
             ))}
           </fieldset>
-          <button disabled={busy || !selected.length}>Create API key</button>
+          {many ? (
+            <fieldset>
+              <legend>WhatsApp numbers</legend>
+              <label className="checkbox">
+                <input
+                  type="radio"
+                  name="keyScope"
+                  checked={scope === null}
+                  onChange={() => setScope(null)}
+                />
+                All numbers, including ones added later
+              </label>
+              <label className="checkbox">
+                <input
+                  type="radio"
+                  name="keyScope"
+                  checked={scope !== null}
+                  onChange={() => setScope([])}
+                />
+                Only the numbers I choose
+              </label>
+              {scope !== null ? (
+                <div className="scope-profiles">
+                  {profiles.map((p) => (
+                    <label className="checkbox" key={p.id}>
+                      <input
+                        type="checkbox"
+                        checked={scope.includes(p.id)}
+                        onChange={(e) =>
+                          setScope(
+                            e.target.checked
+                              ? [...scope, p.id]
+                              : scope.filter((id) => id !== p.id),
+                          )
+                        }
+                      />
+                      {p.name}
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+            </fieldset>
+          ) : null}
+          <button
+            disabled={busy || !selected.length || (scope !== null && !scope.length)}
+          >
+            Create API key
+          </button>
         </form>
         {created ? (
           <div className="new-key">
@@ -122,6 +189,7 @@ export function ApiAccess({
               <div>
                 <strong>{k.name}</strong>
                 <small>{JSON.parse(k.permissions).join(" · ")}</small>
+                {many || k.profiles ? <small>{names(k)}</small> : null}
                 <small>
                   {k.revokedAt
                     ? "Revoked"
@@ -256,11 +324,29 @@ export function ApiAccess({
       </section>
       <aside className="settings-aside">
         <h3>Send a message</h3>
-        <pre>{`curl ${tunnel?.url || `http://127.0.0.1:${port}`}/v1/messages/send \\\n  -H 'Authorization: Bearer YOUR_KEY' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"to":"60123456789",\n       "text":"Hello"}'`}</pre>
+        <pre>{`curl ${tunnel?.url || `http://127.0.0.1:${port}`}/v1/messages/send \\\n  -H 'Authorization: Bearer YOUR_KEY' \\\n${many ? `  -H 'X-Wagate-Profile: ${profiles[1].id}' \\\n` : ""}  -H 'Content-Type: application/json' \\\n  -d '{"to":"60123456789",\n       "text":"Hello"}'`}</pre>
+        {many ? (
+          <>
+            <h3>Choose a number</h3>
+            <p>
+              Send <code>X-Wagate-Profile</code> (or <code>?profile=</code>)
+              with a profile ID. Without it, requests use the main number, or
+              the only number a key is limited to.
+            </p>
+            <ul className="endpoint-list">
+              {profiles.map((p) => (
+                <li key={p.id}>
+                  <code>{p.id}</code> · {p.name}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
         <h3>Available endpoints</h3>
         <ul className="endpoint-list">
           <li>GET /health</li>
           <li>GET /v1/status</li>
+          <li>GET /v1/profiles</li>
           <li>GET /v1/chats</li>
           <li>GET /v1/chats/:id/messages</li>
           <li>POST /v1/messages/send</li>

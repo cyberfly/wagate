@@ -15,9 +15,10 @@ import type {
   BroadcastEvent,
   BroadcastRecipient,
   GroupImport,
+  Profile,
 } from "./api";
 const now = Date.now();
-const chats: Chat[] = [
+let chats: Chat[] = [
   {
     id: "60111111111@s.whatsapp.net",
     provider: "whatsapp",
@@ -67,7 +68,7 @@ chats.sort(
     (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0),
 );
 const ali = chats.find((c) => c.name === "Ali Rahman")!;
-const messages: Message[] = [
+let messages: Message[] = [
   {
     id: "sample-1",
     provider: "whatsapp",
@@ -141,7 +142,7 @@ messages.push(
   groupMessage(4, unnamed, "Check your email for the link.", 5),
   groupMessage(5, { senderId: "me", direction: "outgoing" }, "The recording is up — see the pinned post.", 1),
 );
-const drafts: Draft[] = [
+let drafts: Draft[] = [
   {
     id: "sample-draft",
     chatId: ali.id,
@@ -170,6 +171,7 @@ const keys: {
   id: string;
   name: string;
   permissions: string;
+  profiles: string | null;
   createdAt: number;
   lastUsedAt: null;
   revokedAt: number | null;
@@ -182,7 +184,7 @@ let tunnel: TunnelState = {
   supported: true,
   progress: null,
 };
-const broadcasts: {
+let broadcasts: {
   broadcast: Omit<
     Broadcast,
     | "total"
@@ -316,7 +318,7 @@ function broadcastRequest(
     };
   return summary(entry);
 }
-const groupImports: GroupImport[] = [];
+let groupImports: GroupImport[] = [];
 /** Adds one batch of five per poll; some people need an invite or are already in. */
 function advanceGroupImport() {
   const job = groupImports.find((j) => j.status === "running");
@@ -370,6 +372,136 @@ function groupImportRequest(path: string, method: string, data?: Record<string, 
   groupImports.splice(groupImports.indexOf(job), 1);
   return { success: true };
 }
+// Each fictional number has its own chats, messages, drafts, broadcasts,
+// imports and connection; requests swap the module's data to the one asked for.
+interface PreviewProfile {
+  profile: Omit<Profile, "status">;
+  chats: Chat[];
+  messages: Message[];
+  drafts: Draft[];
+  broadcasts: typeof broadcasts;
+  groupImports: GroupImport[];
+  connection: Snapshot["connection"];
+}
+const shopChat = (n: number, name: string, minutesAgo: number): Chat => ({
+  id: `6017000000${n}@s.whatsapp.net`,
+  provider: "whatsapp",
+  name,
+  type: "direct",
+  lastMessageAt: now - minutesAgo * 60000,
+  aiMode: "off",
+  pinned: false,
+  archived: false,
+});
+const shopChats = [shopChat(1, "Mei Ling", 8), shopChat(2, "Hafiz Catering", 95)];
+const shopMessage = (
+  chat: Chat,
+  n: number,
+  direction: Message["direction"],
+  text: string,
+  minutesAgo: number,
+): Message => ({
+  id: `shop-${n}`,
+  provider: "whatsapp",
+  providerMessageId: `shop-${n}`,
+  chatId: chat.id,
+  senderId: direction === "incoming" ? chat.id : "me",
+  direction,
+  type: "text",
+  text,
+  timestamp: now - minutesAgo * 60000,
+});
+const previewProfiles: PreviewProfile[] = [
+  {
+    profile: { id: "default", name: "Main", account: connection.account ?? null, createdAt: 0, isDefault: true },
+    chats,
+    messages,
+    drafts,
+    broadcasts,
+    groupImports,
+    connection,
+  },
+  {
+    profile: { id: "p_5a1e5f0b7c2d", name: "Shop", account: "60100000002@s.whatsapp.net", createdAt: now - 86400000, isDefault: false },
+    chats: shopChats,
+    messages: [
+      shopMessage(shopChats[0], 1, "incoming", "Is the large tote still in stock?", 10),
+      shopMessage(shopChats[0], 2, "outgoing", "Yes! Two left in navy.", 9),
+      shopMessage(shopChats[0], 3, "incoming", "I’ll take one, please.", 8),
+      shopMessage(shopChats[1], 4, "incoming", "Can we confirm Friday’s order?", 95),
+    ],
+    drafts: [],
+    broadcasts: [],
+    groupImports: [],
+    connection: { status: "connected", account: "60100000002@s.whatsapp.net" },
+  },
+  {
+    profile: { id: "p_9c03d4e1aa60", name: "Support", account: null, createdAt: now - 3600000, isDefault: false },
+    chats: [],
+    messages: [],
+    drafts: [],
+    broadcasts: [],
+    groupImports: [],
+    connection: { status: "disconnected" },
+  },
+];
+let currentProfile = previewProfiles[0];
+function useProfile(id: string) {
+  currentProfile.connection = connection;
+  const next = previewProfiles.find((p) => p.profile.id === id);
+  if (!next) throw new Error("Profile not found");
+  currentProfile = next;
+  ({ chats, messages, drafts, broadcasts, groupImports, connection } = next);
+}
+function profileSummary(p: PreviewProfile): Profile {
+  const state = p === currentProfile ? connection : p.connection;
+  return { ...p.profile, account: state.account ?? p.profile.account, status: state.status };
+}
+function profileName(value: unknown, except?: string) {
+  const name = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!name || name.length > 40) throw new Error("Profile name must be 1–40 characters");
+  if (previewProfiles.some((p) => p.profile.id !== except && p.profile.name.toLowerCase() === name.toLowerCase()))
+    throw new Error(`Profile “${name}” already exists`);
+  return name;
+}
+function profilesRequest(path: string, method: string, data?: Record<string, unknown>) {
+  const id = path.split("/")[3];
+  if (!id && method === "POST") {
+    const name = profileName(data?.name);
+    if (previewProfiles.length >= 10) throw new Error("Profile limit reached: Wagate runs up to 10 numbers");
+    const hex = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const entry: PreviewProfile = {
+      profile: { id: "p_" + hex, name, account: null, createdAt: Date.now(), isDefault: false },
+      chats: [],
+      messages: [],
+      drafts: [],
+      broadcasts: [],
+      groupImports: [],
+      connection: { status: "disconnected" },
+    };
+    previewProfiles.push(entry);
+    return profileSummary(entry);
+  }
+  if (!id) return { profiles: previewProfiles.map(profileSummary) };
+  const entry = previewProfiles.find((p) => p.profile.id === id);
+  if (!entry) throw new Error("Profile not found");
+  if (method === "PUT") {
+    entry.profile.name = profileName(data?.name, id);
+    return profileSummary(entry);
+  }
+  if (entry.profile.isDefault)
+    throw new Error(`Profile “${entry.profile.name}” is the main profile and cannot be removed; reset its session instead`);
+  const unlinked = (entry === currentProfile ? connection : entry.connection).status === "connected";
+  previewProfiles.splice(previewProfiles.indexOf(entry), 1);
+  if (entry === currentProfile) useProfile("default");
+  for (const key of keys) {
+    if (!key.profiles) continue;
+    const left = (JSON.parse(key.profiles) as string[]).filter((p) => p !== id);
+    if (left.length) key.profiles = JSON.stringify(left);
+    else key.revokedAt ??= Date.now();
+  }
+  return { success: true, unlinked };
+}
 export async function previewRequest(
   path: string,
   method: string,
@@ -377,6 +509,20 @@ export async function previewRequest(
 ): Promise<unknown> {
   const url = new URL(path, "http://preview.local");
   const data = body as Record<string, unknown> | undefined;
+  // Routes below match the bare path; the profile only picks the data.
+  const profile = url.searchParams.get("profile") || "default";
+  url.searchParams.delete("profile");
+  path = url.pathname + url.search;
+  if (url.pathname.startsWith("/internal/profiles"))
+    return profilesRequest(url.pathname, method, data);
+  useProfile(profile);
+  if (
+    !currentProfile.profile.isDefault &&
+    (url.pathname === "/internal/groups" ||
+      url.pathname.startsWith("/internal/automations/") ||
+      url.pathname.startsWith("/internal/automation-posts/"))
+  )
+    throw new Error("Group automation previews use the Main profile in the sample UI");
   if (
     url.pathname === "/internal/groups" ||
     url.pathname.startsWith("/internal/automations/") ||
@@ -440,6 +586,8 @@ export async function previewRequest(
         version: "0.1.1",
         ai: config.hasKey ? "configured" : "not_configured",
       },
+      profile: profileSummary(currentProfile),
+      profiles: previewProfiles.map(profileSummary),
       connection,
       chats: [...chats]
         .sort(
@@ -457,8 +605,12 @@ export async function previewRequest(
       processing: [],
       tunnel,
       broadcasts: broadcasts.map(summary),
-      automations: previewAutomations.map((c) => ({ ...c })),
-      automationPosts: previewAutomationPosts.map((p) => ({ ...p })),
+      automations: currentProfile.profile.isDefault
+        ? previewAutomations.map((c) => ({ ...c }))
+        : [],
+      automationPosts: currentProfile.profile.isDefault
+        ? previewAutomationPosts.map((p) => ({ ...p }))
+        : [],
       groupImports: groupImports.map((j) => ({
         ...j,
         members: j.members.map((m) => ({ ...m })),
@@ -506,6 +658,7 @@ export async function previewRequest(
         id,
         name: String(data?.name),
         permissions: JSON.stringify(data?.permissions),
+        profiles: data?.profiles ? JSON.stringify(data.profiles) : null,
         createdAt: Date.now(),
         lastUsedAt: null,
         revokedAt: null,
@@ -520,9 +673,17 @@ export async function previewRequest(
     return {};
   }
   if (path.startsWith("/internal/connection/")) {
-    connection = {
-      status: path.endsWith("/connect") ? "connected" : "disconnected",
-    };
+    // A new preview profile "links" a fictional number on first connect.
+    const account =
+      currentProfile.profile.account ??
+      (currentProfile.profile.isDefault
+        ? undefined
+        : `6010000${String(previewProfiles.indexOf(currentProfile) + 1).padStart(4, "0")}@s.whatsapp.net`);
+    if (path.endsWith("/connect")) currentProfile.profile.account = account ?? null;
+    if (path.endsWith("/logout")) currentProfile.profile.account = null;
+    connection = path.endsWith("/connect")
+      ? { status: "connected", account }
+      : { status: "disconnected" };
     return connection;
   }
   if (path.endsWith("/pin")) {
@@ -543,15 +704,20 @@ export async function previewRequest(
   if (path === "/v1/messages/send" || path.endsWith("/send")) {
     const draft = drafts.find((d) => d.id === path.split("/")[3]);
     const id = crypto.randomUUID();
+    const chatId = draft?.chatId || String(data?.chatId);
     messages.push({
-      ...messages[0],
       id,
+      provider: "whatsapp",
       providerMessageId: id,
-      chatId: draft?.chatId || String(data?.chatId),
+      chatId,
+      senderId: "me",
       direction: "outgoing",
+      type: "text",
       text: String(data?.text),
       timestamp: Date.now(),
     });
+    const chat = chats.find((c) => c.id === chatId);
+    if (chat) chat.lastMessageAt = Date.now();
     if (draft) draft.status = "sent";
     return { success: true, messageId: id };
   }

@@ -24,6 +24,12 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] The inbox order matches WhatsApp's chat list: pinned chats first, then most recent activity; archived chats only under **Archived**.
 - [ ] A message from someone not in your contacts shows their WhatsApp profile name.
 
+- [ ] Add a second profile from the sidebar, scan its QR with a second phone, and confirm both numbers show **Connected** at the same time.
+- [ ] Messages sent to each number appear only in that profile's inbox; replies go out from the number of the open profile.
+- [ ] Quit and reopen Wagate: both profiles reconnect without another QR.
+- [ ] Create an API key limited to the second profile; `/v1/messages/send` without `X-Wagate-Profile` sends from the second number, and `X-Wagate-Profile: default` returns 403.
+- [ ] Remove the second profile while connected: it disappears from **Linked Devices** on that phone, and its `profiles/<id>` directory is gone.
+
 Recovery checks:
 
 - [ ] QR expiry refreshes or gives a visible retry state.

@@ -1,10 +1,7 @@
 import { createVaultLoader } from "./security/vault-loader";
 import { join, resolve } from "node:path";
-import { mkdirSync, chmodSync } from "node:fs";
+import { mkdirSync, chmodSync, rmSync } from "node:fs";
 import { openDatabase } from "./db/database";
-import { ChatRepository } from "./chats/chat-repository";
-import { MessageRepository } from "./messages/message-repository";
-import { MessageService } from "./messages/message-service";
 import { BaileysProvider } from "./messaging/baileys/baileys-provider";
 import { EventBus } from "./events/event-bus";
 import { ApiKeys } from "./security/api-keys";
@@ -13,15 +10,9 @@ import { Settings } from "./config/settings";
 import { createLogger } from "./config/logger";
 import { createApi } from "./api/server";
 import { OpenRouterProvider } from "./ai/openrouter";
-import { DraftRepository } from "./ai/draft-repository";
-import { CopilotService } from "./ai/copilot-service";
 import { TunnelService } from "./tunnel/tunnel-service";
-import { BroadcastRepository } from "./broadcast/broadcast-repository";
-import { BroadcastService } from "./broadcast/broadcast-service";
-import { ContactRepository } from "./contacts/contact-repository";
-import { AutomationRepository } from "./automation/automation-repository";
-import { AutomationService } from "./automation/automation-service";
-import { GroupImportService } from "./groups/group-import-service";
+import { ProfileRuntime } from "./profiles/profile-runtime";
+import { ProfileManager } from "./profiles/profile-manager";
 process.umask(0o077);
 const port = Number(process.env.WAGATE_PORT || 8787);
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
@@ -34,96 +25,50 @@ const log = createLogger(dataDir);
 console.log = () => log("info", "dependency.log");
 console.warn = () => log("error", "dependency.warning");
 console.error = () => log("error", "dependency.error");
+// The main database is the main profile's, and holds what profiles share.
 const db = openDatabase(join(dataDir, "wagate.sqlite"));
-const events = new EventBus(),
-  chats = new ChatRepository(db),
-  messages = new MessageRepository(db, chats),
-  settings = new Settings(db),
-  keys = new ApiKeys(db),
-  drafts = new DraftRepository(db),
-  contacts = new ContactRepository(db);
-const vault = createVaultLoader(() => Vault.open(db, dataDir));
-const provider = new BaileysProvider(vault, {
-  connection: (state) => {
-    events.publish("messaging.connection", state);
-    log("info", "whatsapp.state", { state: state.status });
-    if (state.status === "connected") resyncAccountStateOnce();
-  },
-  message: (message, live) => sender.receive(message, live),
-  receipt: (receipt) => {
-    if (receipt.status === "failed")
-      log("error", "whatsapp.message.rejected", {
-        code: receipt.error ?? "none",
-      });
-    broadcasts.receipt(receipt);
-    automations.receipt(receipt);
-  },
-  chat: (chat) => {
-    if (chats.apply(chat)) events.publish("chat.updated", { id: chat.id });
-  },
-  contacts: (names) => contacts.save(names),
-  phones: (links) => contacts.linkPhones(links),
-  error: () => {
-    log("error", "whatsapp.operation.failed");
-    events.publish("messaging.error", {
-      error: "WhatsApp operation failed. Check local storage and reconnect.",
-    });
-  },
-});
-// Account state synced before Wagate stored it (saved contact names; pins and
-// archives, which order the inbox) needs one fresh copy from WhatsApp. Fetch
-// what is missing once, after the connection settles; a failure leaves the
-// flags unset so the next connection tries again.
-const accountState = [
-  { flag: "contacts.resynced", collection: "critical_unblock_low" },
-  { flag: "chats.resynced", collection: "regular_low" },
-] as const;
-let accountResync: ReturnType<typeof setTimeout> | undefined;
-function resyncAccountStateOnce() {
-  const missing = accountState.filter((s) => settings.get(s.flag) !== "true");
-  if (accountResync || !missing.length) return;
-  accountResync = setTimeout(() => {
-    provider
-      .resyncAccountState(missing.map((s) => s.collection))
-      .then(() => {
-        for (const s of missing) settings.set(s.flag, "true");
-        log("info", "whatsapp.account_state.resynced", {
-          collections: missing.map((s) => s.collection).join(","),
-        });
-      })
-      .catch(() => log("error", "whatsapp.account_state.resync_failed"))
-      .finally(() => (accountResync = undefined));
-  }, 10000);
-}
-const sender = new MessageService(provider, messages, events);
+const settings = new Settings(db),
+  keys = new ApiKeys(db);
+const vault = createVaultLoader(() =>
+  Vault.open(db, dataDir, () => profiles.databases()),
+);
 const ai = new OpenRouterProvider(async () =>
   (await vault()).get("openrouter"),
 );
-const copilot = new CopilotService(
-  ai,
-  chats,
-  messages,
-  sender,
-  drafts,
-  settings,
-  events,
-);
-const broadcasts = new BroadcastService(
-  new BroadcastRepository(db),
-  sender,
-  provider,
-  events,
-);
-const groupImports = new GroupImportService(provider, events);
-const automations = new AutomationService(
-  new AutomationRepository(db),
-  ai,
-  provider,
-  sender,
-  chats,
-  settings,
-  events,
-);
+const profileDir = (id: string) => join(dataDir, "profiles", id);
+const profiles = new ProfileManager(db, {
+  open: (id) => {
+    const dir = profileDir(id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    return openDatabase(join(dir, "wagate.sqlite"));
+  },
+  destroy: (id) => {
+    // Profile ids are generated, never user text; still, stay inside profiles/.
+    if (!/^p_[0-9a-f]{12}$/.test(id)) return;
+    rmSync(profileDir(id), { recursive: true, force: true });
+  },
+  removed: (id) => keys.forgetProfile(id),
+  log,
+  runtime: (id, profileDb) =>
+    new ProfileRuntime({
+      id,
+      db: profileDb,
+      ai,
+      aiSettings: settings,
+      log,
+      // Every profile shares the one master key in the OS credential store.
+      provider: (events) =>
+        new BaileysProvider(
+          profileDb === db
+            ? vault
+            : async () => (await vault()).forDatabase(profileDb),
+          events,
+        ),
+    }),
+});
+// Opened before the port is bound; nothing connects until profiles.start().
+profiles.load();
 const desktopToken = process.env.WAGATE_DESKTOP_TOKEN || "";
 delete process.env.WAGATE_DESKTOP_TOKEN;
 const databaseHealthy = () => {
@@ -135,19 +80,10 @@ const databaseHealthy = () => {
   }
 };
 const services = {
-  provider,
+  profiles,
   keys,
-  chats,
-  messages,
-  sender,
-  events,
   settings,
   vault,
-  drafts,
-  copilot,
-  broadcasts,
-  groupImports,
-  automations,
   port,
   databaseHealthy,
   log,
@@ -161,7 +97,7 @@ const publicApp = createApi({
 });
 const tunnel = new TunnelService({
   dataDir,
-  events,
+  events: new EventBus(),
   log,
   fetch: publicApp.fetch,
 });
@@ -176,23 +112,19 @@ try {
   });
 } catch {
   log("error", "sidecar.bind.failed", { port });
+  await profiles.close();
   db.close();
   process.exit(1);
 }
 log("info", "sidecar.started", { port });
-automations.start();
+profiles.start();
 let stopping = false;
 const shutdown = async () => {
   if (stopping) return;
   stopping = true;
-  clearTimeout(accountResync);
-  copilot.close();
-  broadcasts.close();
-  groupImports.close();
-  automations.close();
   tunnel.close();
   server.stop(true);
-  await provider.disconnect();
+  await profiles.close();
   db.close();
   log("info", "sidecar.stopped");
   process.exit(0);
@@ -208,4 +140,3 @@ if (process.env.WAGATE_DESKTOP === "1") {
   });
   process.stdin.on("end", () => void shutdown());
 }
-if (settings.get("whatsapp.autoConnect") === "true") void provider.connect();
