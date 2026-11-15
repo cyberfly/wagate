@@ -9,6 +9,7 @@ import { BroadcastService } from "../broadcast/broadcast-service";
 import { ChatRepository } from "../chats/chat-repository";
 import { AvatarService } from "../chats/avatar-service";
 import { PresenceService } from "../chats/presence-service";
+import { ChatActions } from "../chats/chat-actions";
 import { Settings } from "../config/settings";
 import { ContactRepository } from "../contacts/contact-repository";
 import { EventBus } from "../events/event-bus";
@@ -78,6 +79,7 @@ export class ProfileRuntime {
   readonly automations: AutomationService;
   readonly avatars: AvatarService;
   readonly presence: PresenceService;
+  readonly chatActions: ChatActions;
   /** The latest errors, newest last, for the desktop app to show. */
   readonly alerts: { id: number; error: string }[] = [];
   private accountResync?: ReturnType<typeof setTimeout>;
@@ -120,6 +122,7 @@ export class ProfileRuntime {
       contacts: (names) => this.contacts.save(names),
       phones: (links) => this.contacts.linkPhones(links),
       presence: (update) => this.presence.apply(update),
+      blocked: (ids, kind) => this.chatActions.blocked(ids, kind),
       error: () => {
         this.log("error", "whatsapp.operation.failed");
         this.events.publish("messaging.error", {
@@ -131,6 +134,7 @@ export class ProfileRuntime {
     this.sender = new MessageService(this.provider, this.messages, this.events);
     this.avatars = new AvatarService(db, this.provider, this.events, o.pace?.avatar);
     this.presence = new PresenceService(db, this.provider, this.events);
+    this.chatActions = new ChatActions(this.chats, this.messages, this.provider, this.events);
     this.copilot = new CopilotService(
       o.ai,
       this.chats,

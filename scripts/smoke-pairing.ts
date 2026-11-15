@@ -18,6 +18,7 @@ const provider = new BaileysProvider(async () => vault, {
   contacts: () => {},
   phones: () => {},
     presence: () => {},
+    blocked: () => {},
   message: () => {},
   error: () => finish(false),
 });

@@ -1,5 +1,6 @@
 import type { MessagingProvider } from "../messaging/messaging-provider";
 import type {
+  LinkPreview,
   Message,
   MessageChange,
   MessageReceipt,
@@ -52,8 +53,42 @@ export function resolveChatId(value: string) {
   );
 }
 /** What leaves the sidecar: the media download reference stays inside. */
-function visible({ mediaSource: _, ...message }: ReceivedMessage): Message {
+function visible({ mediaSource: _, linkThumbnail: __, ...message }: ReceivedMessage): Message {
   return message;
+}
+/** What a send may carry besides its text. */
+export interface SendExtras {
+  replyTo?: string;
+  /** Ids of people the text names as `@` and the id's number. */
+  mentions?: string[];
+  link?: LinkPreview;
+}
+/** The mentions a text really names; the rest are dropped. */
+function namedMentions(text: string, mentions?: string[]) {
+  if (!mentions?.length) return undefined;
+  if (mentions.length > 50) throw new Error("Invalid mentions: name up to 50 people");
+  const named = [...new Set(mentions)].filter((id) => {
+    if (typeof id !== "string" || !/^\d{5,20}@(s\.whatsapp\.net|lid)$/.test(id))
+      throw new Error("Invalid mentions");
+    return new RegExp(`@${id.split("@")[0]}(?!\\d)`).test(text);
+  });
+  return named.length ? named : undefined;
+}
+function checkedLink(text: string, link?: LinkPreview) {
+  if (!link) return undefined;
+  if (!/^https?:\/\/\S+$/i.test(link.url) || link.url.length > 2000 || !text.includes(link.url))
+    throw new Error("Invalid link preview: the message must contain the link");
+  const title = link.title.trim().slice(0, 300);
+  if (!title) throw new Error("Invalid link preview: it needs a title");
+  const t = link.thumbnail;
+  if (t && (t.length > 96 * 1024 || t[0] !== 0xff || t[1] !== 0xd8))
+    throw new Error("Invalid link preview: the picture must be a small JPEG");
+  return {
+    url: link.url,
+    title,
+    description: link.description?.trim().slice(0, 600) || undefined,
+    thumbnail: t?.length ? t : undefined,
+  };
 }
 /** Largest attachment sent or fetched through the desktop app. */
 export const maxMediaBytes = 16 * 1024 * 1024;
@@ -123,19 +158,25 @@ export class MessageService {
     this.events.publish("chat.updated", { id: message.chatId });
     return shown;
   }
-  async send(chatId: string, text: string, options: { replyTo?: string } = {}) {
+  async send(chatId: string, text: string, options: SendExtras = {}) {
     text = text.trim();
     if (!text || text.length > 10000)
       throw new Error("Text must contain 1–10,000 characters");
+    const mentions = namedMentions(text, options.mentions),
+      link = checkedLink(text, options.link);
     chatId = this.ready(chatId);
     const quoted = this.replyTarget(chatId, options.replyTo);
-    const message = await this.provider.sendText(chatId, text, quoted ? { quoted } : {});
+    const message = await this.provider.sendText(chatId, text, {
+      ...(quoted ? { quoted } : {}),
+      ...(mentions ? { mentions } : {}),
+      ...(link ? { link } : {}),
+    });
     return this.sent(message);
   }
   async sendMedia(
     chatId: string,
     media: OutgoingMedia,
-    options: { replyTo?: string } = {},
+    options: Omit<SendExtras, "link"> = {},
   ) {
     if (!media.data.length) throw new Error("Invalid attachment: the file is empty");
     if (media.data.length > maxMediaBytes)
@@ -145,12 +186,17 @@ export class MessageService {
     const caption = media.caption?.trim();
     if (caption && caption.length > 4000)
       throw new Error("Invalid caption: use up to 4,000 characters");
+    if (media.voice && !media.mimetype.startsWith("audio/"))
+      throw new Error("Invalid attachment: a voice message must be audio");
+    if (media.seconds !== undefined && !(media.seconds > 0 && media.seconds <= 3600))
+      throw new Error("Invalid attachment: the length must be up to an hour");
+    const mentions = caption ? namedMentions(caption, options.mentions) : undefined;
     chatId = this.ready(chatId);
     const quoted = this.replyTarget(chatId, options.replyTo);
     const message = await this.provider.sendMedia(
       chatId,
       { ...media, caption: caption || undefined, fileName: media.fileName?.slice(0, 200) },
-      quoted ? { quoted } : {},
+      { ...(quoted ? { quoted } : {}), ...(mentions ? { mentions } : {}) },
     );
     return this.sent(message);
   }
@@ -174,7 +220,7 @@ export class MessageService {
   preview(messageId: string) {
     const target = this.repository.source(messageId);
     if (!target || target.deletedAt) throw new Error("Invalid message");
-    const data = this.provider.thumbnail(target);
+    const data = this.repository.linkThumbnail(messageId) ?? this.provider.thumbnail(target);
     if (!data) throw new Error("Media preview is unavailable");
     return { mimetype: "image/jpeg", data, complete: false };
   }

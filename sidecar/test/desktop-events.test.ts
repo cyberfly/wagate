@@ -92,6 +92,7 @@ test("the desktop stream reports changes, the unread badge and notifications", a
     notifications: true,
     preview: false,
     presence: true,
+    links: true,
   });
   s.sender.receive(incoming("m3"), true);
   expect(await stream.until("notify")).toMatchObject({ body: "New message" });

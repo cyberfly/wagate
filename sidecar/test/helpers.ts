@@ -4,18 +4,21 @@ import { Settings } from "../src/config/settings";
 import { ApiKeys } from "../src/security/api-keys";
 import { Vault } from "../src/security/vault";
 import { createApi } from "../src/api/server";
+import { LinkPreviews } from "../src/messages/link-preview";
 import { ProfileManager } from "../src/profiles/profile-manager";
 import { ProfileRuntime } from "../src/profiles/profile-runtime";
 import { TunnelService } from "../src/tunnel/tunnel-service";
 import { AutomationRepository } from "../src/automation/automation-repository";
 import type { AIProvider, AIRequest } from "../src/ai/ai-provider";
 import type {
+  LastMessage,
   MessagingProvider,
   SendOptions,
   StoredMessage,
 } from "../src/messaging/messaging-provider";
 import type {
   Message,
+  ChatChange,
   ConnectionState,
   GroupInfo,
   GroupAddResult,
@@ -85,6 +88,23 @@ export class FakeProvider implements MessagingProvider {
     this.leaveCalls.push(groupId);
     this.groups = this.groups.filter((g) => g.id !== groupId);
   }
+  members: { id: string; phone?: string | null; admin: boolean }[] = [];
+  async groupMembers() {
+    if (this.state.status !== "connected") throw new Error("WhatsApp is disconnected");
+    return this.members;
+  }
+  chatChanges: { chatId: string; change: ChatChange; last?: LastMessage | null }[] = [];
+  chatChangeError: Error | null = null;
+  async modifyChat(chatId: string, change: ChatChange, last?: LastMessage | null) {
+    if (this.chatChangeError) throw this.chatChangeError;
+    this.chatChanges.push({ chatId, change, last });
+  }
+  blocks: { chatId: string; blocked: boolean }[] = [];
+  async setBlocked(chatId: string, blocked: boolean) {
+    this.blocks.push({ chatId, blocked });
+  }
+  /** What each send carried besides its text, in send order. */
+  extras: SendOptions[] = [];
   async connect() {
     this.state = { status: "connected" };
   }
@@ -121,17 +141,22 @@ export class FakeProvider implements MessagingProvider {
           }
         : {}),
     };
+    if (options?.mentions?.length) m.mentions = options.mentions.map((id) => ({ id }));
+    if (options?.link)
+      m.media = { link: { url: options.link.url, title: options.link.title, ...(options.link.thumbnail ? { image: true } : {}) } };
+    if (options?.link?.thumbnail) m.linkThumbnail = options.link.thumbnail;
     this.sent.push(m);
     this.quotes.push(options?.quoted);
+    this.extras.push(options ?? {});
     return m;
   }
   media: OutgoingMedia[] = [];
   async sendMedia(chatId: string, media: OutgoingMedia, options?: SendOptions) {
     this.media.push(media);
     const m = await this.sendText(chatId, media.caption ?? "", options);
-    m.type = media.mimetype.startsWith("image/") ? "image" : "document";
+    m.type = media.mimetype.startsWith("image/") ? "image" : media.voice ? "audio" : "document";
     m.text = media.caption ?? media.fileName;
-    m.media = { mimetype: media.mimetype, size: media.data.length };
+    m.media = { mimetype: media.mimetype, size: media.data.length, ...(media.voice ? { ptt: true } : {}) };
     m.mediaSource = new Uint8Array([1]);
     return m;
   }
@@ -268,10 +293,20 @@ export function setup(ai?: AIProvider) {
     log: () => {},
     fetch: publicApp.fetch,
   });
+  /** The pretend internet link previews are read from, by address. */
+  const web = new Map<string, () => Response>();
+  const fetched: string[] = [];
   const app = createApi({
     ...services,
     desktopToken: "test-desktop-token",
     tunnel,
+    links: new LinkPreviews({
+      fetch: async (url) => {
+        fetched.push(url);
+        return web.get(url)?.() ?? new Response("", { status: 404 });
+      },
+      resolve: async () => ["93.184.216.34"],
+    }),
   });
   const call = (
     path: string,
@@ -311,6 +346,8 @@ export function setup(ai?: AIProvider) {
     providers,
     destroyed,
     app,
+    web,
+    fetched,
     publicApp,
     tunnel,
     call,

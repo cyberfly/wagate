@@ -12,6 +12,8 @@ import type {
   GroupAddResult,
   PhoneLink,
   PresenceUpdate,
+  ChatChange,
+  LinkPreview,
 } from "./types";
 export interface ProviderEvents {
   connection: (state: ConnectionState) => void;
@@ -23,6 +25,8 @@ export interface ProviderEvents {
   contacts: (contacts: ContactNames[]) => void;
   phones: (links: PhoneLink[]) => void;
   presence: (update: PresenceUpdate) => void;
+  /** The whole block list ("set"), or people added to or removed from it. */
+  blocked: (ids: string[], kind: "set" | "add" | "remove") => void;
   error: (message: string) => void;
 }
 export interface MessagingProvider {
@@ -83,7 +87,18 @@ export interface MessagingProvider {
   ): Promise<GroupAddResult[]>;
   /** Leaves a group. Its chat and history stay on this device. */
   leaveGroup(groupId: string): Promise<void>;
+  /** The people in a group, without our own account. */
+  groupMembers(groupId: string): Promise<{ id: string; phone?: string | null; admin: boolean }[]>;
+  /**
+   * Mutes, archives, marks read or unread, or deletes a chat on WhatsApp, so
+   * the phone and other linked devices follow. `last` is the chat's newest
+   * stored message, which WhatsApp needs for all but muting.
+   */
+  modifyChat(chatId: string, change: ChatChange, last?: LastMessage | null): Promise<void>;
+  /** Blocks or unblocks a person. */
+  setBlocked(chatId: string, blocked: boolean): Promise<void>;
 }
+export type LastMessage = StoredMessage & { timestamp: number };
 // Historical reads deliberately live in repositories: SQLite is the source of truth.
 
 /** A stored message, as the provider needs it to quote, react to or download it. */
@@ -94,4 +109,8 @@ export type StoredMessage = Pick<
 export interface SendOptions {
   /** The message this one replies to. */
   quoted?: StoredMessage;
+  /** People the text names as `@` and their id's number. */
+  mentions?: string[];
+  /** Shown with a text message that contains the link. */
+  link?: LinkPreview;
 }

@@ -4,10 +4,14 @@ import type { Chat, ChatUpdate } from "../messaging/types";
 // a name from history sync), so contact names fill in for direct chats.
 /** A mute still in force: one with no end, or one that ends later. */
 const muted = `(c.muted_until=-1 OR c.muted_until>CAST(strftime('%s','now') AS INTEGER)*1000)`;
+/** Blocked under the chat's own id or the person's other id. */
+const blocked = `EXISTS(SELECT 1 FROM blocked b WHERE b.id=c.id
+ OR b.id IN (SELECT l.lid FROM lid_phones l WHERE l.phone=c.id)
+ OR b.id IN (SELECT l.phone FROM lid_phones l WHERE l.lid=c.id))`;
 const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name,c.id) AS name,
  c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode,
  COALESCE(c.inbox_pinned,c.pinned_at IS NOT NULL) AS pinned,c.archived<>0 AS archived,c.unread_count AS unreadCount,
- COALESCE(${muted},0) AS muted,
+ COALESCE(${muted},0) AS muted,${blocked} AS blocked,
  (SELECT a.changed_at FROM avatars a WHERE a.id=c.id AND a.data IS NOT NULL) AS avatar,
  (SELECT CASE WHEN m.deleted_at IS NOT NULL THEN '🚫 This message was deleted'
    WHEN m.type='text' THEN m.text
@@ -19,16 +23,23 @@ const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name
    END FROM messages m WHERE m.chat_id=c.id AND m.type<>'system'
   ORDER BY m.timestamp DESC,m.id DESC LIMIT 1) AS lastMessage`;
 const from = "chats c LEFT JOIN contacts k ON k.id=c.id";
-type Row = Omit<Chat, "pinned" | "archived" | "muted"> & {
+type Row = Omit<Chat, "pinned" | "archived" | "muted" | "blocked"> & {
   pinned: number;
   archived: number;
   muted: number;
+  blocked: number;
 };
 const toChat = (row: Row | null): Chat | null =>
-  row && { ...row, pinned: !!row.pinned, archived: !!row.archived, muted: !!row.muted };
+  row && {
+    ...row,
+    pinned: !!row.pinned,
+    archived: !!row.archived,
+    muted: !!row.muted,
+    blocked: !!row.blocked,
+  };
 export class ChatRepository {
   constructor(private db: Database) {}
-  upsert(chat: Omit<Chat, "aiMode" | "pinned" | "archived" | "muted" | "avatar">) {
+  upsert(chat: Omit<Chat, "aiMode" | "pinned" | "archived" | "muted" | "avatar" | "blocked">) {
     const now = Date.now();
     this.db
       .query(
@@ -128,6 +139,31 @@ export class ChatRepository {
       .get(id) as { n: number } | null;
     if (row?.n) this.db.query("UPDATE chats SET unread_count=0 WHERE id=?").run(id);
     return row?.n ?? 0;
+  }
+  /**
+   * Takes a deleted chat out of the list: with no known activity it is left
+   * out until a new message arrives. Its settings start afresh.
+   */
+  forget(id: string) {
+    this.db
+      .query(
+        `UPDATE chats SET last_message_at=NULL,unread_count=0,archived=0,pinned_at=NULL,
+         inbox_pinned=NULL,inbox_pinned_at=NULL WHERE id=?`,
+      )
+      .run(id);
+  }
+  /** Records who this account blocked, as WhatsApp reports it. */
+  setBlocked(ids: string[], kind: "set" | "add" | "remove") {
+    this.db.transaction(() => {
+      if (kind === "set") this.db.query("DELETE FROM blocked").run();
+      const change = this.db.query(
+        kind === "remove"
+          ? `DELETE FROM blocked WHERE id=?1 OR id IN (SELECT lid FROM lid_phones WHERE phone=?1)
+             OR id IN (SELECT phone FROM lid_phones WHERE lid=?1)`
+          : "INSERT OR IGNORE INTO blocked(id) VALUES(?1)",
+      );
+      for (const id of ids) change.run(id);
+    })();
   }
   setMode(id: string, mode: Chat["aiMode"]) {
     this.db.query("UPDATE chats SET ai_mode=? WHERE id=?").run(mode, id);

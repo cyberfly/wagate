@@ -57,6 +57,7 @@ export type {
   GroupAddResult,
   SearchHit,
   ChatPresence,
+  GroupMember,
 } from "../../sidecar/src/messaging/types";
 export type {
   AutomationPost,

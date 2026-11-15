@@ -2,6 +2,18 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AddMember } from "./AddMember";
 import { Avatar } from "./Avatar";
 import { EmojiPicker } from "./EmojiPicker";
+import { ChatMenu } from "./ChatMenu";
+import { LinkCard, useLinkPreview } from "./LinkCard";
+import {
+  applyMentions,
+  matchingMembers,
+  memberName,
+  mentionQuery,
+  MentionPicker,
+  useGroupMembers,
+  type PickedMention,
+} from "./MentionPicker";
+import { canRecord, MicIcon, useVoiceRecorder } from "./VoiceRecorder";
 import {
   AttachIcon,
   DownloadIcon,
@@ -25,6 +37,7 @@ import {
   type Draft,
   type SearchHit,
   type ChatPresence,
+  type GroupMember,
 } from "../lib/api";
 interface Props {
   chats: Chat[];
@@ -85,8 +98,48 @@ export function Inbox(p: Props) {
     [removing, setRemoving] = useState<Message | null>(null),
     [leaving, setLeaving] = useState(false),
     [sending, setSending] = useState(false),
-    [emoji, setEmoji] = useState(false);
+    [emoji, setEmoji] = useState(false),
+    [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null),
+    [confirming, setConfirming] = useState<{ kind: "block" | "delete"; chat: Chat } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const menuChat = menu ? p.chats.find((c) => c.id === menu.id) : undefined;
+  // Mentions: typing "@" in a group offers its members. The composer shows a
+  // name; the number WhatsApp needs is swapped in when the message is sent.
+  const [picked, setPicked] = useState<Record<string, PickedMention[]>>({}),
+    [caret, setCaret] = useState(0),
+    [mentionIndex, setMentionIndex] = useState(0),
+    [mentionClosed, setMentionClosed] = useState<number | null>(null);
+  const asking = chat?.type === "group" && !editing ? mentionQuery(text, caret) : null;
+  const members = useGroupMembers(p.selected, !!asking && p.connected);
+  const candidates =
+    asking && asking.start !== mentionClosed ? matchingMembers(members, asking.query) : [];
+  useEffect(() => setMentionIndex(0), [asking?.query]);
+  useEffect(() => {
+    if (!asking) setMentionClosed(null);
+  }, [!asking]);
+  const pickMention = (m: GroupMember) => {
+    if (!asking || !p.selected) return;
+    const id = p.selected,
+      label = "@" + memberName(m);
+    const before = text.slice(0, asking.start);
+    setText(before + label + " " + text.slice(caret));
+    setPicked((all) => ({
+      ...all,
+      [id]: [...(all[id] ?? []).filter((x) => x.label !== label), { label, id: m.id }],
+    }));
+    const position = before.length + label.length + 1;
+    setCaret(position);
+    requestAnimationFrame(() => {
+      composer.current?.focus();
+      composer.current?.setSelectionRange(position, position);
+    });
+  };
+  const voice = useVoiceRecorder((message) => p.notify(message, "error"));
+  const blocked = !!chat?.blocked;
+  const linking = useLinkPreview(
+    text,
+    !!p.selected && p.connected && !attachment && !editing && !blocked,
+  );
   /** In a direct chat every incoming message is from the chat's person. */
   const peer = chat?.type === "direct" ? chatTitle(chat) : undefined;
   const pane = useRef<HTMLDivElement>(null);
@@ -103,6 +156,8 @@ export function Inbox(p: Props) {
     setRemoving(null);
     setLeaving(false);
     setEmoji(false);
+    setCaret(0);
+    voice.cancel();
   }, [p.selected]);
   // An open chat is read while this window has focus, as on WhatsApp Web:
   // its unread count clears and the senders get read receipts.
@@ -205,10 +260,12 @@ export function Inbox(p: Props) {
     if (attachment) URL.revokeObjectURL(attachment.url);
   }, [attachment]);
   useEffect(() => {
-    if (!viewer && !replyTo && !attachment && !editing && !forwarding && !removing) return;
+    if (!viewer && !replyTo && !attachment && !editing && !forwarding && !removing && !confirming && voice.state === "idle") return;
     const close = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (viewer) setViewer(null);
+      if (confirming) setConfirming(null);
+      else if (viewer) setViewer(null);
+      else if (voice.state !== "idle") voice.cancel();
       else if (forwarding) setForwarding(null);
       else if (removing) setRemoving(null);
       else if (editing) cancelEdit();
@@ -369,7 +426,11 @@ export function Inbox(p: Props) {
     "/internal/chats/" + encodeURIComponent(c.id) + "/pin", "PUT", { pinned: !c.pinned },
   ));
   const item = (c: Chat) => (
-    <div key={c.id} className={"chat-row " + (c.id === p.selected ? "selected" : "") + (c.unreadCount ? " unread" : "")}>
+    <div key={c.id} className={"chat-row " + (c.id === p.selected ? "selected" : "") + (c.unreadCount ? " unread" : "")}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenu({ id: c.id, x: e.clientX, y: e.clientY });
+      }}>
     <button
       className={"chat-item " + (c.id === p.selected ? "selected" : "")}
       aria-pressed={c.id === p.selected}
@@ -388,7 +449,9 @@ export function Inbox(p: Props) {
       </span>
       <span className="chat-meta">
         {c.lastMessageAt ? <time>{lastActive(c.lastMessageAt)}</time> : null}
-        {c.unreadCount ? (
+        {c.muted && !c.unreadCount ? (
+          <small className="muted-mark" title="Muted" aria-label="Muted">🔕</small>
+        ) : c.unreadCount ? (
           <span className={"unread-badge" + (c.muted ? " muted-chat" : "")}
             aria-label={c.unreadCount + " unread" + (c.muted ? ", muted" : "")}>
             {c.unreadCount > 99 ? "99+" : c.unreadCount}
@@ -415,7 +478,24 @@ export function Inbox(p: Props) {
     });
   };
   const send = () => {
-    if (!p.selected || p.busy || !p.connected) return;
+    if (!p.selected || p.busy || !p.connected || blocked) return;
+    if (voice.state === "recording") {
+      const id = p.selected, quoted = replyTo;
+      nearBottom.current = true;
+      return track(p.act(async () => {
+        const recording = await voice.finish();
+        if (!recording) return p.notify("That recording was too short to send.");
+        await request("/v1/messages/send-media", "POST", {
+          chatId: id,
+          data: await readFile(recording.blob),
+          mimetype: recording.mimetype,
+          voice: true,
+          seconds: recording.seconds,
+          replyTo: quoted?.id,
+        });
+        setReplyTo((r) => (r === quoted ? null : r));
+      }));
+    }
     if (!text.trim() && !attachment) return;
     if (editing) {
       const target = editing, newText = text;
@@ -427,6 +507,8 @@ export function Inbox(p: Props) {
       }));
     }
     const id = p.selected, sentText = text, quoted = replyTo, file = attachment;
+    const wire = applyMentions(sentText, picked[id] ?? []);
+    const link = !file && linking.link && wire.text.includes(linking.link.url) ? linking.link : undefined;
     nearBottom.current = true;
     stopTyping();
     return track(p.act(async () => {
@@ -436,15 +518,19 @@ export function Inbox(p: Props) {
           data: await readFile(file.file),
           mimetype: file.file.type || "application/octet-stream",
           fileName: file.file.name,
-          caption: sentText.trim() || undefined,
+          caption: wire.text.trim() || undefined,
+          mentions: wire.mentions,
           replyTo: quoted?.id,
         });
       else
         await request("/v1/messages/send", "POST", {
           chatId: id,
-          text: sentText,
+          text: wire.text,
+          mentions: wire.mentions,
+          linkPreview: link,
           replyTo: quoted?.id,
         });
+      setPicked((all) => ({ ...all, [id]: [] }));
       setCompositions((current) => current[id] === sentText ? { ...current, [id]: "" } : current);
       setReplyTo((r) => (r === quoted ? null : r));
       setAttachment((a) => (a === file ? null : a));
@@ -607,6 +693,21 @@ export function Inbox(p: Props) {
                 title={chat.pinned ? "Unpin chat" : "Pin chat"}
                 aria-label={chat.pinned ? "Unpin current chat" : "Pin current chat"}
                 aria-pressed={chat.pinned} disabled={p.busy} onClick={() => pin(chat)}><PinIcon /></button> : null}
+              {chat ? (
+                <button
+                  className="header-pin icon-button"
+                  title="Chat actions"
+                  aria-label="Chat actions"
+                  aria-haspopup="menu"
+                  aria-expanded={menu?.id === chat.id}
+                  onClick={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setMenu({ id: chat.id, x: r.right - 190, y: r.bottom + 4 });
+                  }}
+                >
+                  <MoreIcon />
+                </button>
+              ) : null}
               <label className="mode-picker">
                 AI mode
                 <select
@@ -797,8 +898,34 @@ export function Inbox(p: Props) {
                 </button>
               </div>
             ) : null}
-            {replyTo || attachment || editing ? (
+            {blocked && chat ? (
+              <div className="copilot-notice warning blocked-bar">
+                You blocked this contact. Neither of you can message the other.
+                <button
+                  className="text-button"
+                  disabled={!p.connected || p.busy}
+                  onClick={() =>
+                    void p.act(() =>
+                      request(`/internal/chats/${encodeURIComponent(chat.id)}/block`, "PUT", { blocked: false }),
+                    )
+                  }
+                >
+                  Unblock
+                </button>
+              </div>
+            ) : null}
+            {replyTo || attachment || editing || linking.link ? (
               <div className="compose-context">
+                {linking.link ? (
+                  <div className="reply-bar">
+                    <LinkCard
+                      link={linking.link}
+                      image={linking.link.thumbnail ? "data:image/jpeg;base64," + linking.link.thumbnail : null}
+                      open={false}
+                    />
+                    <button className="icon-button" aria-label="Send without the link preview" title="Remove preview" onClick={linking.dismiss}>✕</button>
+                  </div>
+                ) : null}
                 {editing ? (
                   <div className="reply-bar">
                     <div className="quote static editing">
@@ -863,12 +990,24 @@ export function Inbox(p: Props) {
                   e.target.value = "";
                 }}
               />
+              {voice.state !== "idle" ? (
+                <div className="voice-bar" role="status">
+                  <button type="button" className="icon-button attach-button" title="Discard recording" aria-label="Discard recording" onClick={voice.cancel}>✕</button>
+                  <span className={"voice-dot" + (voice.state === "recording" ? " live" : "")} aria-hidden="true" />
+                  <span>
+                    {voice.state === "starting"
+                      ? "Waiting for the microphone…"
+                      : `Recording ${Math.floor(voice.seconds / 60)}:${String(voice.seconds % 60).padStart(2, "0")}`}
+                  </span>
+                </div>
+              ) : (
+              <>
               <button
                 type="button"
                 className="icon-button attach-button"
                 title="Attach a photo, video or file"
                 aria-label="Attach a file"
-                disabled={!p.connected || p.busy}
+                disabled={!p.connected || p.busy || blocked}
                 onClick={() => fileInput.current?.click()}
               >
                 <AttachIcon />
@@ -880,13 +1019,17 @@ export function Inbox(p: Props) {
                   title="Emoji"
                   aria-label="Insert emoji"
                   aria-expanded={emoji}
-                  disabled={!p.connected || p.busy}
+                  disabled={!p.connected || p.busy || blocked}
                   onClick={() => setEmoji(!emoji)}
                 >
                   <span aria-hidden="true">☺</span>
                 </button>
                 {emoji ? <EmojiPicker className="composer-emoji" pick={insert} close={() => setEmoji(false)} /> : null}
               </span>
+              <span className="composer-field">
+              {candidates.length ? (
+                <MentionPicker members={candidates} active={mentionIndex} pick={pickMention} hover={setMentionIndex} />
+              ) : null}
               <textarea
                 ref={composer}
                 rows={1}
@@ -894,6 +1037,8 @@ export function Inbox(p: Props) {
                 placeholder={
                   !p.connected
                     ? "Connect WhatsApp to send a message"
+                    : blocked
+                    ? "Unblock this contact to send a message"
                     : editing
                       ? "Edit your message…"
                       : attachment
@@ -902,11 +1047,13 @@ export function Inbox(p: Props) {
                 }
                 value={text}
                 maxLength={10000}
-                disabled={!p.connected || p.busy}
+                disabled={!p.connected || p.busy || blocked}
                 onChange={(e) => {
                   setText(e.target.value);
+                  setCaret(e.target.selectionStart);
                   typed(e.target.value);
                 }}
+                onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                 onPaste={(e) => {
                   const file = [...e.clipboardData.files][0];
                   if (file) {
@@ -915,6 +1062,25 @@ export function Inbox(p: Props) {
                   }
                 }}
                 onKeyDown={(e) => {
+                  if (candidates.length && !e.nativeEvent.isComposing) {
+                    const n = candidates.length;
+                    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setMentionIndex((i) => (i + (e.key === "ArrowDown" ? 1 : -1) + n) % n);
+                      return;
+                    }
+                    if (e.key === "Enter" || e.key === "Tab") {
+                      e.preventDefault();
+                      pickMention(candidates[mentionIndex] ?? candidates[0]!);
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMentionClosed(asking!.start);
+                      return;
+                    }
+                  }
                   if (
                     e.key === "Enter" &&
                     !e.shiftKey &&
@@ -925,14 +1091,29 @@ export function Inbox(p: Props) {
                   }
                 }}
               />
+              </span>
+              </>
+              )}
+              {voice.state === "idle" && !text.trim() && !attachment && !editing && canRecord() ? (
+                <button
+                  type="button"
+                  className="icon-button attach-button"
+                  title="Record a voice message"
+                  aria-label="Record a voice message"
+                  disabled={!p.connected || p.busy || blocked}
+                  onClick={() => void voice.start()}
+                >
+                  <MicIcon />
+                </button>
+              ) : null}
               <button
                 type="submit"
                 className={sending ? "sending" : undefined}
-                disabled={p.busy || !p.connected || (!text.trim() && !attachment)}
+                disabled={p.busy || !p.connected || blocked || voice.state === "starting" || (voice.state === "idle" && !text.trim() && !attachment)}
               >
                 {sending ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">{editing ? "✓" : "➤"}</span>}
                 <span className="visually-hidden" aria-live="polite">
-                  {sending ? (editing ? "Saving edit…" : "Sending…") : editing ? "Save edit" : "Send message"}
+                  {sending ? (editing ? "Saving edit…" : "Sending…") : editing ? "Save edit" : voice.state === "recording" ? "Send voice message" : "Send message"}
                 </span>
               </button>
             </form>
@@ -1057,8 +1238,75 @@ export function Inbox(p: Props) {
           </div>
         )}
       </div>
+      {menu && menuChat ? (
+        <ChatMenu
+          chat={menuChat}
+          at={menu}
+          connected={p.connected}
+          busy={p.busy}
+          close={() => setMenu(null)}
+          act={p.act}
+          notify={p.notify}
+          // An open chat is read as soon as it is seen, so it steps aside.
+          beforeUnread={(c) => c.id === p.selected && p.select(null)}
+          confirm={(kind, c) => setConfirming({ kind, chat: c })}
+        />
+      ) : null}
+      {confirming ? (
+        <div className="modal-backdrop" onClick={() => setConfirming(null)}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" onClick={(e) => e.stopPropagation()}>
+            <h3 id="confirm-title">
+              {confirming.kind === "block" ? "Block " : "Delete chat with "}
+              {chatTitle(confirming.chat)}?
+            </h3>
+            {confirming.kind === "block" ? (
+              <p>
+                They can no longer message or call you on WhatsApp, and you
+                can’t message them. WhatsApp doesn’t tell them.
+              </p>
+            ) : (
+              <p>
+                Its messages are removed from this device, and the chat is
+                deleted on your phone and other linked devices. This can’t be
+                undone.
+                {confirming.chat.type === "group"
+                  ? " If you are still in the group, the chat returns with its next message."
+                  : ""}
+              </p>
+            )}
+            {p.connected ? null : <p className="inline-error">Connect WhatsApp first.</p>}
+            <div className="modal-actions">
+              <button
+                className="danger"
+                disabled={!p.connected || p.busy}
+                onClick={() => {
+                  const { kind, chat: c } = confirming;
+                  void p.act(async () => {
+                    const path = "/internal/chats/" + encodeURIComponent(c.id);
+                    if (kind === "block") await request(path + "/block", "PUT", { blocked: true });
+                    else {
+                      await request(path, "DELETE");
+                      if (c.id === p.selected) p.select(null);
+                    }
+                    setConfirming(null);
+                    p.notify((kind === "block" ? "Blocked " : "Deleted the chat with ") + chatTitle(c));
+                  });
+                }}
+              >
+                {confirming.kind === "block" ? "Block" : "Delete chat"}
+              </button>
+              <button className="text-button" onClick={() => setConfirming(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
+}
+function MoreIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>;
 }
 function AddPersonIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4" /><path d="M2 21c0-3.9 3.1-7 7-7s7 3.1 7 7M19 8v6M16 11h6" /></svg>;

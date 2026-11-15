@@ -202,6 +202,15 @@ CREATE TABLE avatars (
 );
 PRAGMA user_version = 14;
 `;
+// People this account blocked, as WhatsApp names them: often by LID, so chats
+// match through lid_phones in either direction. A link's small preview picture
+// is kept beside its message.
+export const chatActionsSchema = `
+CREATE TABLE blocked (id TEXT PRIMARY KEY);
+CREATE INDEX lid_phones_phone ON lid_phones(phone);
+ALTER TABLE messages ADD COLUMN link_thumbnail BLOB;
+PRAGMA user_version = 15;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -218,4 +227,5 @@ export const migrations = [
   unreadSchema,
   muteSchema,
   avatarSchema,
+  chatActionsSchema,
 ];

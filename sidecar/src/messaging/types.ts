@@ -27,6 +27,33 @@ export interface Chat {
   muted?: boolean;
   /** When the stored profile picture last changed; null without one. */
   avatar?: number | null;
+  /** This account blocked the person: neither side's messages arrive. */
+  blocked?: boolean;
+}
+/** Someone in a group, for mentioning them. */
+export interface GroupMember {
+  /** The id WhatsApp mentions them by in this group; often a LID. */
+  id: string;
+  /** Their phone-number id, when WhatsApp reveals it. */
+  phone?: string | null;
+  name?: string | null;
+  admin: boolean;
+}
+/** A change to a chat that WhatsApp keeps in step across devices. */
+export type ChatChange =
+  /** When the mute ends, -1 for no end, or null to unmute. */
+  | { mute: number | null }
+  | { archive: boolean }
+  /** Marks the chat unread (false) or read (true). */
+  | { read: boolean }
+  | { delete: true };
+/** What a link leads to, shown with a message that contains it. */
+export interface LinkPreview {
+  url: string;
+  title: string;
+  description?: string;
+  /** A small JPEG. */
+  thumbnail?: Uint8Array;
 }
 export interface GroupInfo {
   id: string;
@@ -131,6 +158,14 @@ export interface MessageMedia {
   /** A shared location. */
   latitude?: number;
   longitude?: number;
+  /** On a text message: the page its link leads to. */
+  link?: {
+    url: string;
+    title?: string;
+    description?: string;
+    /** A small picture is stored with the message. */
+    image?: boolean;
+  };
 }
 export interface QuotedMessage {
   /** WhatsApp's id for the quoted message. */
@@ -172,6 +207,8 @@ export interface MessageChange {
  */
 export interface ReceivedMessage extends Message {
   mediaSource?: Uint8Array | null;
+  /** The small JPEG of a link preview. */
+  linkThumbnail?: Uint8Array | null;
 }
 /** An attachment to send, decoded from base64. */
 export interface OutgoingMedia {
@@ -179,6 +216,10 @@ export interface OutgoingMedia {
   mimetype: string;
   fileName?: string;
   caption?: string;
+  /** Audio recorded in the app: sent as a voice message. */
+  voice?: boolean;
+  /** Length of a voice message. */
+  seconds?: number;
 }
 /**
  * What WhatsApp said about one of our messages after it left the socket.

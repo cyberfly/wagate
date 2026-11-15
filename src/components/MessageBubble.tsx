@@ -3,6 +3,7 @@ import { initials, phoneLabel, type Message } from "../lib/api";
 import { formatText, openExternal } from "../lib/format";
 import { duration, fileSize, useMedia, type LoadedMedia } from "../lib/media";
 import { EmojiPicker } from "./EmojiPicker";
+import { LinkCard } from "./LinkCard";
 /** WhatsApp lets you edit a text message for 15 minutes after sending it. */
 export const editWindow = 15 * 60_000;
 /** ...and delete it for everyone for about two and a half days. */
@@ -131,6 +132,9 @@ export function MessageBubble({
       ) : (
         <MessageContent message={m} actions={actions} />
       )}
+      {!deleted && m.type === "text" && m.media?.link && m.text?.includes(m.media.link.url) ? (
+        <MessageLink message={m} />
+      ) : null}
       {showText ? <p>{formatText(caption!, m.mentions)}</p> : null}
       <footer className="message-meta">
         {m.editedAt && !deleted ? <span className="edited">Edited</span> : null}
@@ -244,6 +248,16 @@ export function MessageBubble({
         </span>
       )}
       {bubble}
+    </div>
+  );
+}
+/** The page a text message links to, with its small picture when one is stored. */
+function MessageLink({ message: m }: { message: Message }) {
+  const link = m.media!.link!;
+  const picture = useMedia(m.id, !!link.image, { preview: true, lazy: true });
+  return (
+    <div ref={(el) => void (picture.ref.current = el)}>
+      <LinkCard link={link} image={picture.status === "ready" ? picture.media.url : null} />
     </div>
   );
 }

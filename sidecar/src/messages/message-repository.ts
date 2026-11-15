@@ -68,8 +68,8 @@ export class MessageRepository {
       const inserted =
         this.db
           .query(
-            `INSERT OR IGNORE INTO messages(id,provider,provider_message_id,chat_id,sender_id,direction,type,text,timestamp,created_at,media,media_source,quoted,status,deleted_at,forwarded,mentions)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT OR IGNORE INTO messages(id,provider,provider_message_id,chat_id,sender_id,direction,type,text,timestamp,created_at,media,media_source,quoted,status,deleted_at,forwarded,mentions,link_thumbnail)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             message.id,
@@ -89,6 +89,7 @@ export class MessageRepository {
             message.deletedAt ?? null,
             message.forwarded ? 1 : 0,
             mentions,
+            message.linkThumbnail ?? null,
           ).changes > 0;
       if (!inserted) {
         // Group history was once stored without its sender, which then read as
@@ -152,7 +153,7 @@ export class MessageRepository {
     if (change.kind === "delete") {
       this.db
         .query(
-          `UPDATE messages SET deleted_at=?,text=NULL,media=NULL,media_source=NULL WHERE provider_message_id=?`,
+          `UPDATE messages SET deleted_at=?,text=NULL,media=NULL,media_source=NULL,link_thumbnail=NULL WHERE provider_message_id=?`,
         )
         .run(change.timestamp, change.providerMessageId);
       this.db
@@ -223,6 +224,38 @@ export class MessageRepository {
              WHERE used>?)`,
         )
         .run(limit);
+    })();
+  }
+  /** The small picture of a text message's link preview. */
+  linkThumbnail(id: string) {
+    const row = this.db
+      .query(`SELECT link_thumbnail AS data FROM messages WHERE id=? AND deleted_at IS NULL`)
+      .get(id) as { data: Uint8Array | null } | null;
+    return row?.data ? new Uint8Array(row.data) : null;
+  }
+  /** The chat's newest message, which WhatsApp wants named when a chat changes. */
+  last(chatId: string) {
+    const row = this.db
+      .query(
+        `SELECT id,timestamp FROM messages WHERE chat_id=? AND type<>'system'
+         ORDER BY timestamp DESC,id DESC LIMIT 1`,
+      )
+      .get(chatId) as { id: string; timestamp: number } | null;
+    const source = row && this.source(row.id);
+    return source ? { ...source, timestamp: row!.timestamp } : null;
+  }
+  /** Removes every message of a chat from this device, with what hangs on them. */
+  clearChat(chatId: string) {
+    this.db.transaction(() => {
+      const mine = `SELECT id FROM messages WHERE chat_id=?1`;
+      this.db.query(`DELETE FROM media_cache WHERE message_id IN (${mine})`).run(chatId);
+      this.db
+        .query(
+          `DELETE FROM reactions WHERE provider_message_id IN (SELECT provider_message_id FROM messages WHERE chat_id=?1)`,
+        )
+        .run(chatId);
+      this.db.query(`DELETE FROM drafts WHERE chat_id=?1`).run(chatId);
+      this.db.query(`DELETE FROM messages WHERE chat_id=?1`).run(chatId);
     })();
   }
   /** Deletes a message from this device only ("delete for me"). */

@@ -13,7 +13,8 @@ import type { TunnelService } from "../tunnel/tunnel-service";
 import type { ProfileManager } from "../profiles/profile-manager";
 import type { ProfileRuntime } from "../profiles/profile-runtime";
 import { defaultProfile } from "../profiles/profile-manager";
-import type { Message } from "../messaging/types";
+import type { LinkPreview, Message } from "../messaging/types";
+import { LinkPreviews } from "../messages/link-preview";
 /**
  * The terms a person agrees to before using the app (TERMS.md). Raise this
  * when they change in substance, so everyone is asked again.
@@ -48,6 +49,8 @@ interface Services {
   databaseHealthy: () => boolean;
   /** Runs the command that opens a link; tests replace it. */
   openUrl?: (command: string[]) => void;
+  /** Looks up link previews; tests replace the network. */
+  links?: LinkPreviews;
   log: (level: "info" | "error", event: string) => void;
 }
 /** Chooses a profile for one request; the query form suits EventSource clients. */
@@ -80,6 +83,31 @@ function optional(value: unknown, name: string, max = 200) {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string" || value.length > max) throw new Error(`Invalid ${name}`);
   return value.trim() || undefined;
+}
+/** A base64 field, decoded. */
+function bytes(value: unknown, name: string, max: number) {
+  const encoded = string(value, name, max).replace(/^data:[^,]*,/, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error(`Invalid ${name}: data must be base64`);
+  return new Uint8Array(Buffer.from(encoded, "base64"));
+}
+/** Ids of mentioned people, when a send names any. */
+function mentionList(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string"))
+    throw new Error("Invalid mentions");
+  return value as string[];
+}
+/** A link preview sent along with a text. */
+function linkField(value: unknown): LinkPreview | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid link preview");
+  const v = value as Record<string, unknown>;
+  return {
+    url: string(v.url, "link preview", 2000),
+    title: string(v.title, "link preview", 1000),
+    description: optional(v.description, "link preview", 4000),
+    thumbnail: v.thumbnail ? bytes(v.thumbnail, "link preview", 140 * 1024) : undefined,
+  };
 }
 function string(value: unknown, name: string, max = 10000) {
   if (typeof value !== "string" || !value.trim() || value.length > max)
@@ -249,7 +277,11 @@ export function createApi(s: Services) {
     const message = await profile(c).sender.send(
       string(data.chatId || data.to, "recipient", 100),
       string(data.text, "text"),
-      { replyTo: optional(data.replyTo, "reply") },
+      {
+        replyTo: optional(data.replyTo, "reply"),
+        mentions: mentionList(data.mentions),
+        link: linkField(data.linkPreview),
+      },
     );
     return c.json({ success: true, messageId: message.id, message });
   });
@@ -257,18 +289,21 @@ export function createApi(s: Services) {
     const data = await body(c);
     if (data.to && data.chatId)
       return c.json({ error: "Provide to or chatId, not both" }, 400);
-    const encoded = string(data.data, "attachment", 23 * 1024 * 1024).replace(/^data:[^,]*,/, "");
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))
-      throw new Error("Invalid attachment: data must be base64");
+    if (data.voice !== undefined && typeof data.voice !== "boolean")
+      throw new Error("Invalid attachment: voice must be true or false");
+    if (data.seconds !== undefined && typeof data.seconds !== "number")
+      throw new Error("Invalid attachment: seconds must be a number");
     const message = await profile(c).sender.sendMedia(
       string(data.chatId || data.to, "recipient", 100),
       {
-        data: new Uint8Array(Buffer.from(encoded, "base64")),
+        data: bytes(data.data, "attachment", 23 * 1024 * 1024),
         mimetype: string(data.mimetype, "attachment type", 100).toLowerCase(),
         fileName: optional(data.fileName, "file name", 200),
         caption: optional(data.caption, "caption", 4000),
+        ...(data.voice ? { voice: true } : {}),
+        ...(typeof data.seconds === "number" ? { seconds: data.seconds } : {}),
       },
-      { replyTo: optional(data.replyTo, "reply") },
+      { replyTo: optional(data.replyTo, "reply"), mentions: mentionList(data.mentions) },
     );
     return c.json({ success: true, messageId: message.id, message });
   });
@@ -394,7 +429,61 @@ export function createApi(s: Services) {
       notifications: s.settings.get("notifications.enabled") !== "false",
       preview: s.settings.get("notifications.preview") !== "false",
       presence: s.settings.get("presence.enabled") !== "false",
+      links: s.settings.get("links.preview") !== "false",
     });
+    const links = s.links ?? new LinkPreviews();
+    // What the page behind a typed link says about itself. The lookup comes
+    // from this computer, as it does from WhatsApp's own apps.
+    app.get("/internal/link-preview", async (c) => {
+      const url = string(c.req.query("url"), "link", 2000);
+      if (!preferences().links) return c.json({ preview: null });
+      const page = await links.get(url);
+      return c.json({
+        preview: page && {
+          url: page.url,
+          title: page.title,
+          description: page.description ?? null,
+          image: page.image
+            ? { mimetype: page.image.mimetype, data: Buffer.from(page.image.data).toString("base64") }
+            : null,
+        },
+      });
+    });
+    app.get("/internal/groups/:groupId/members", async (c) => {
+      const groupId = resolveChatId(c.req.param("groupId"));
+      if (!groupId.endsWith("@g.us")) throw new Error("Invalid group");
+      const p = profile(c);
+      const members = await p.provider.groupMembers(groupId);
+      const names = p.contacts.names(members);
+      return c.json({
+        members: members
+          .map((m, i) => ({ ...m, phone: m.phone ?? names[i]!.phone, name: names[i]!.name }))
+          .sort((a, b) => (a.name ?? "\uffff").localeCompare(b.name ?? "\uffff")),
+      });
+    });
+    // Changes to a whole chat, made on WhatsApp so the phone follows.
+    app.put("/internal/chats/:chatId/mute", standardLimit, async (c) => {
+      const { mute } = await body(c);
+      if (mute !== "8h" && mute !== "1w" && mute !== "always" && mute !== "off")
+        throw new Error("Invalid mute: use 8h, 1w, always or off");
+      return c.json(await profile(c).chatActions.mute(resolveChatId(c.req.param("chatId")), mute));
+    });
+    app.put("/internal/chats/:chatId/archive", standardLimit, async (c) => {
+      const { archived } = await body(c);
+      if (typeof archived !== "boolean") throw new Error("Invalid archive: archived must be true or false");
+      return c.json(await profile(c).chatActions.archive(resolveChatId(c.req.param("chatId")), archived));
+    });
+    app.post("/internal/chats/:chatId/unread", async (c) =>
+      c.json(await profile(c).chatActions.markUnread(resolveChatId(c.req.param("chatId")))),
+    );
+    app.put("/internal/chats/:chatId/block", standardLimit, async (c) => {
+      const { blocked } = await body(c);
+      if (typeof blocked !== "boolean") throw new Error("Invalid block: blocked must be true or false");
+      return c.json(await profile(c).chatActions.block(resolveChatId(c.req.param("chatId")), blocked));
+    });
+    app.delete("/internal/chats/:chatId", async (c) =>
+      c.json(await profile(c).chatActions.remove(resolveChatId(c.req.param("chatId")))),
+    );
     app.get("/internal/preferences", (c) => c.json(preferences()));
     app.put("/internal/preferences", standardLimit, async (c) => {
       const b = await body(c);
@@ -402,6 +491,7 @@ export function createApi(s: Services) {
         ["notifications", "notifications.enabled"],
         ["preview", "notifications.preview"],
         ["presence", "presence.enabled"],
+        ["links", "links.preview"],
       ] as const) {
         if (b[field] === undefined) continue;
         if (typeof b[field] !== "boolean") return c.json({ error: `Invalid ${field}` }, 400);

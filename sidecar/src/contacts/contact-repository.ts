@@ -22,6 +22,24 @@ export class ContactRepository {
       }
     })();
   }
+  /**
+   * The best name known for each person: saved in your phone, else the name
+   * they gave themselves. People are looked up by id and by phone number.
+   */
+  names(people: { id: string; phone?: string | null }[]) {
+    const lookup = this.db.query(
+      `SELECT COALESCE(p.name,k.name,p.push_name,k.push_name) AS name,COALESCE(?2,l.phone) AS phone
+       FROM (SELECT ?1 AS id) s LEFT JOIN contacts k ON k.id=s.id
+       LEFT JOIN lid_phones l ON l.lid=s.id LEFT JOIN contacts p ON p.id=COALESCE(?2,l.phone)`,
+    );
+    return people.map((person) => {
+      const row = lookup.get(person.id, person.phone ?? null) as {
+        name: string | null;
+        phone: string | null;
+      } | null;
+      return { name: row?.name ?? null, phone: row?.phone ?? null };
+    });
+  }
   /** Which phone number each LID belongs to. */
   linkPhones(links: PhoneLink[]) {
     const upsert = this.db.query(

@@ -169,12 +169,23 @@ function previewMedia(id: string, preview: boolean) {
   if (!m) throw new Error("Invalid message");
   const sent = sentMedia.get(id);
   if (sent && !preview) return { ...sent, complete: true };
-  if (m.type === "image" || m.type === "video" || sent)
+  if (m.type === "image" || m.type === "video" || sent || (preview && m.media?.link?.image))
     return { mimetype: preview ? "image/jpeg" : "image/png", data: drawImage(m.text || "Photo", preview), complete: !preview };
   if (m.type === "audio") return { mimetype: "audio/wav", data: tone(), complete: true };
   if (m.type === "document") return { mimetype: "application/pdf", data: btoa("%PDF-1.4 sample"), complete: true };
   throw new Error("Media is unavailable for this message");
 }
+/** People in the sample group, for mentioning. */
+const previewMembers = [
+  { id: "60111111111@s.whatsapp.net", phone: "60111111111@s.whatsapp.net", name: "Aisyah Rahman", admin: true },
+  { id: "60122222222@s.whatsapp.net", phone: "60122222222@s.whatsapp.net", name: "Daniel Tan", admin: false },
+  { id: "222333444555@lid", phone: "60133333333@s.whatsapp.net", name: "Siti Aminah", admin: false },
+  { id: "60144444444@s.whatsapp.net", phone: "60144444444@s.whatsapp.net", name: null, admin: false },
+];
+const sampleMentions = (ids: unknown) =>
+  Array.isArray(ids) && ids.length
+    ? ids.map((id) => ({ id: String(id), name: previewMembers.find((m) => m.id === id)?.name ?? null }))
+    : undefined;
 // A community group: members named, known only by number, and one message
 // synced without its sender.
 const community: Chat = {
@@ -230,7 +241,7 @@ let connection: Snapshot["connection"] = {
   account: "60000000000@s.whatsapp.net",
 };
 let termsAccepted = false;
-let preferences = { notifications: true, preview: true, presence: true };
+let preferences = { notifications: true, preview: true, presence: true, links: true };
 let config = {
   ai: {
     model: "openai/gpt-4o-mini",
@@ -711,6 +722,38 @@ export async function previewRequest(
     return { ...tunnel };
   }
   if (/^\/internal\/chats\/[^/]+\/avatar$/.test(url.pathname)) return { data: null };
+  if (url.pathname === "/internal/link-preview") {
+    const link = url.searchParams.get("url") ?? "";
+    if (!preferences.links) return { preview: null };
+    await new Promise((r) => setTimeout(r, 300));
+    return {
+      preview: {
+        url: link,
+        title: "Sample page title",
+        description: "What the page says about itself appears here, as it will for the person you send it to.",
+        image: { mimetype: "image/png", data: drawImage("Preview", false) },
+      },
+    };
+  }
+  if (/^\/internal\/groups\/[^/]+\/members$/.test(url.pathname))
+    return { members: previewMembers };
+  // Chat actions: mute, archive, mark unread or read, block, delete.
+  const chatAction = url.pathname.match(/^\/internal\/chats\/([^/]+)(?:\/(mute|archive|unread|read|block))?$/);
+  if (chatAction && (chatAction[2] || method === "DELETE")) {
+    const chat = chats.find((c) => c.id === decodeURIComponent(chatAction[1]!));
+    if (!chat) throw new Error("Chat not found");
+    if (!chatAction[2]) {
+      chats = chats.filter((c) => c !== chat);
+      messages = messages.filter((m) => m.chatId !== chat.id);
+      return { success: true };
+    }
+    if (chatAction[2] === "mute") chat.muted = data?.mute !== "off";
+    if (chatAction[2] === "archive") chat.archived = !!data?.archived;
+    if (chatAction[2] === "unread") chat.unreadCount = Math.max(1, chat.unreadCount ?? 0);
+    if (chatAction[2] === "read") chat.unreadCount = 0;
+    if (chatAction[2] === "block") chat.blocked = !!data?.blocked;
+    return { ...chat };
+  }
   if (/^\/internal\/(chats\/[^/]+\/presence|presence\/away)$/.test(url.pathname))
     return { success: true, active: false };
   if (url.pathname === "/internal/search") {
@@ -877,7 +920,13 @@ export async function previewRequest(
       direction: "outgoing",
       type,
       text: (data?.caption as string | undefined) || (type === "document" ? String(data?.fileName) : undefined),
-      media: { mimetype, fileName: type === "document" ? String(data?.fileName) : undefined, size: Math.round((String(data?.data).length * 3) / 4) },
+      media: {
+        mimetype,
+        fileName: type === "document" ? String(data?.fileName) : undefined,
+        size: Math.round((String(data?.data).length * 3) / 4),
+        ...(data?.voice ? { ptt: true, seconds: Number(data.seconds) || undefined } : {}),
+      },
+      mentions: sampleMentions(data?.mentions),
       quoted: quote(data?.replyTo),
       status: "sent",
       reactions: [],
@@ -900,6 +949,13 @@ export async function previewRequest(
       direction: "outgoing",
       type: "text",
       text: String(data?.text),
+      mentions: sampleMentions(data?.mentions),
+      ...(data?.linkPreview
+        ? (() => {
+            const link = data.linkPreview as { url: string; title: string; description?: string; thumbnail?: string };
+            return { media: { link: { url: link.url, title: link.title, description: link.description, image: !!link.thumbnail } } };
+          })()
+        : {}),
       quoted: quote(data?.replyTo),
       status: "sent",
       reactions: [],

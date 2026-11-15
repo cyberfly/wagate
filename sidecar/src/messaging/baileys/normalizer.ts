@@ -213,6 +213,23 @@ const hidden = [
   "messageHistoryNotice",
   "botInvokeMessage",
 ] as const;
+/** The page preview a text message carries for a link it contains. */
+function linkPreview(
+  m: proto.Message.IExtendedTextMessage | null | undefined,
+  text: string,
+): MessageMedia["link"] | undefined {
+  const url = m?.matchedText?.trim();
+  const title = m?.title?.trim(),
+    description = m?.description?.trim();
+  if (!url || !/^https?:\/\//i.test(url) || !text.includes(url) || !(title || description))
+    return undefined;
+  return {
+    url: url.slice(0, 2000),
+    ...(title ? { title: title.slice(0, 300) } : {}),
+    ...(description ? { description: description.slice(0, 600) } : {}),
+    ...(m?.jpegThumbnail?.length ? { image: true } : {}),
+  };
+}
 /** The kind, readable text and attachment details of one message's content. */
 export function describeContent(content: Content): {
   type: Message["type"];
@@ -220,11 +237,11 @@ export function describeContent(content: Content): {
   media?: MessageMedia;
   field?: MediaField;
 } {
-  if (content.conversation != null || content.extendedTextMessage)
-    return {
-      type: "text",
-      text: content.conversation || content.extendedTextMessage?.text || "",
-    };
+  if (content.conversation != null || content.extendedTextMessage) {
+    const text = content.conversation || content.extendedTextMessage?.text || "";
+    const link = linkPreview(content.extendedTextMessage, text);
+    return { type: "text", text, ...(link ? { media: { link } } : {}) };
+  }
   for (const field of Object.keys(mediaFields) as MediaField[]) {
     const m = content[field] as
       | (Record<string, unknown> & { mimetype?: string | null })
@@ -526,6 +543,9 @@ export function normalizeMessage(
     message.media = described.media;
   if ("field" in described && described.field && content)
     message.mediaSource = mediaSource(content, described.field);
+  const thumbnail = message.media?.link?.image && content?.extendedTextMessage?.jpegThumbnail;
+  if (thumbnail && thumbnail.length <= 200 * 1024) message.linkThumbnail = new Uint8Array(thumbnail);
+  else if (message.media?.link) delete message.media.link.image;
   const reply = content ? quoted(content, self) : null;
   if (reply) message.quoted = reply;
   const info = content ? contextInfo(content) : undefined;

@@ -30,6 +30,27 @@ export function groupInfo(
         self.isSuperAdmin === true),
   };
 }
+/** Everyone in a group but our own account, by the id the group knows them by. */
+export function groupMembers(group: GroupMetadata, user: Contact | undefined) {
+  const ownIds = new Set(
+    [user?.id, user?.lid, user?.phoneNumber]
+      .filter((id): id is string => !!id)
+      .map(jidNormalizedUser),
+  );
+  return group.participants
+    .filter(
+      (p) => ![p.id, p.lid, p.phoneNumber].some((id) => id && ownIds.has(jidNormalizedUser(id))),
+    )
+    .map((p) => {
+      const ids = [p.id, p.phoneNumber, p.lid].filter((id): id is string => !!id);
+      const phone = ids.find((id) => id.endsWith("@s.whatsapp.net"));
+      return {
+        id: jidNormalizedUser(p.id),
+        phone: phone ? jidNormalizedUser(phone) : null,
+        admin: p.admin === "admin" || p.admin === "superadmin" || p.isAdmin === true || p.isSuperAdmin === true,
+      };
+    });
+}
 /** Why WhatsApp refused to add someone, by the error code it returned. */
 const addErrors: Record<string, string> = {
   "401": "They blocked this number",

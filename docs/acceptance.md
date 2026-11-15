@@ -47,6 +47,13 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] With a chat open, the other phone sees "online" and "typing…"; typing on the other phone shows "typing…" in the header. Switching to another app takes Wagate offline within seconds.
 - [ ] With **Show when I am online and typing** off, the other phone never sees Wagate online.
 
+- [ ] Mute (8 hours), archive, mark unread and block from a chat's menu each show on the phone within seconds; undoing each on the phone shows in Wagate.
+- [ ] Deleting a test chat removes it from Wagate and from the phone; a new message from that person brings back a fresh chat.
+- [ ] A contact blocked on the phone shows the blocked notice in Wagate, and cannot be messaged until unblocked.
+- [ ] In a test group, typing `@` lists members; a sent mention shows as a tappable name on the other phone and notifies that person.
+- [ ] Typing a link shows a preview card above the message box; the sent message shows the same card on the other phone. With link previews turned off, no card appears.
+- [ ] A recorded voice message plays on both an Android phone and an iPhone, shows as a voice message (not a file), and shows its length. First use asks for microphone access on macOS and on Windows.
+
 Recovery checks:
 
 - [ ] QR expiry refreshes or gives a visible retry state.

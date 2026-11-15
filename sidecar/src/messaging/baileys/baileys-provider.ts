@@ -11,15 +11,16 @@ import makeWASocket, {
 import pino from "pino";
 import QRCode from "qrcode";
 import type {
+  LastMessage,
   MessagingProvider,
   ProviderEvents,
   SendOptions,
   StoredMessage,
 } from "../messaging-provider";
-import type { ConnectionState, OutgoingMedia } from "../types";
+import type { ChatChange, ConnectionState, OutgoingMedia } from "../types";
 import { Vault } from "../../security/vault";
 import { createAuth } from "./auth";
-import { addResults, groupInfo } from "./groups";
+import { addResults, groupInfo, groupMembers } from "./groups";
 import {
   embeddedThumbnail,
   historyReactions,
@@ -105,6 +106,43 @@ export class BaileysProvider implements MessagingProvider {
       throw new Error("WhatsApp is disconnected");
     await socket.groupLeave(groupId);
   }
+  async groupMembers(groupId: string) {
+    const socket = this.connected();
+    const group = await socket.groupMetadata(groupId);
+    this.receiveLinks(group.participants);
+    return groupMembers(group, socket.user);
+  }
+  async modifyChat(chatId: string, change: ChatChange, last?: LastMessage | null) {
+    const socket = this.connected();
+    if ("mute" in change) return socket.chatModify({ mute: change.mute }, chatId);
+    if (!last) throw new Error("This chat has no messages on this device yet");
+    const lastMessages = [
+      { key: this.key(last), messageTimestamp: Math.floor(last.timestamp / 1000) },
+    ];
+    if ("archive" in change)
+      await socket.chatModify({ archive: change.archive, lastMessages }, chatId);
+    else if ("read" in change)
+      await socket.chatModify({ markRead: change.read, lastMessages }, chatId);
+    else await socket.chatModify({ delete: true, lastMessages }, chatId);
+  }
+  async setBlocked(chatId: string, blocked: boolean) {
+    try {
+      await this.connected().updateBlockStatus(chatId, blocked ? "block" : "unblock");
+    } catch (error) {
+      // Baileys needs both of the person's ids, which arrive with their messages.
+      if (/Unable to resolve/.test(error instanceof Error ? error.message : ""))
+        throw new Error(
+          "WhatsApp has not shared this person’s details with this device yet. " +
+            (blocked ? "Block" : "Unblock") + " them on your phone.",
+        );
+      throw error;
+    }
+  }
+  /** Fetches who this account has blocked; changes then arrive as events. */
+  private async loadBlocklist() {
+    const ids = await this.connected().fetchBlocklist();
+    this.events.blocked(ids.filter(Boolean).map((id) => jidNormalizedUser(id)), "set");
+  }
   private update(state: ConnectionState) {
     this.state = state;
     this.events.connection(this.getConnectionState());
@@ -175,6 +213,7 @@ export class BaileysProvider implements MessagingProvider {
             // senders in stored group messages. listGroups records them.
             setTimeout(() => {
               if (active()) void this.listGroups().catch(() => {});
+              if (active()) void this.loadBlocklist().catch(() => {});
             }, 5000);
           }
           if (update.connection === "close") {
@@ -311,6 +350,14 @@ export class BaileysProvider implements MessagingProvider {
               state,
             });
         }
+      });
+      socket.ev.on("blocklist.set", ({ blocklist }) => {
+        if (active())
+          this.events.blocked(blocklist.filter(Boolean).map((id) => jidNormalizedUser(id)), "set");
+      });
+      socket.ev.on("blocklist.update", ({ blocklist, type }) => {
+        if (active())
+          this.events.blocked(blocklist.filter(Boolean).map((id) => jidNormalizedUser(id)), type);
       });
       socket.ev.on("lid-mapping.update", ({ lid, pn }) => {
         if (active()) this.receiveLinks([{ id: lid, phoneNumber: pn }]);
@@ -457,24 +504,54 @@ export class BaileysProvider implements MessagingProvider {
     return message;
   }
   async sendText(chatId: string, text: string, options?: SendOptions) {
-    return this.send(chatId, { text }, options);
+    const link = options?.link;
+    return this.send(
+      chatId,
+      {
+        text,
+        ...(options?.mentions?.length ? { mentions: options.mentions } : {}),
+        // Null stops Baileys from looking the link up itself.
+        linkPreview: link
+          ? {
+              "canonical-url": link.url,
+              "matched-text": link.url,
+              title: link.title,
+              description: link.description,
+              jpegThumbnail: link.thumbnail ? Buffer.from(link.thumbnail) : undefined,
+            }
+          : null,
+      },
+      options,
+    );
   }
   async sendMedia(chatId: string, media: OutgoingMedia, options?: SendOptions) {
     const data = Buffer.from(media.data);
-    const { mimetype, caption } = media;
+    const { mimetype } = media;
     const fileName = media.fileName || "file";
+    const caption = media.caption
+      ? {
+          caption: media.caption,
+          ...(options?.mentions?.length ? { mentions: options.mentions } : {}),
+        }
+      : {};
     let content: AnyMessageContent;
     if (/^image\/(jpeg|png|webp)$/.test(mimetype))
-      content = { image: data, mimetype, ...(caption ? { caption } : {}) };
+      content = { image: data, mimetype, ...caption };
     else if (mimetype === "video/mp4")
-      content = { video: data, mimetype, ...(caption ? { caption } : {}) };
-    else if (/^audio\//.test(mimetype)) content = { audio: data, mimetype };
+      content = { video: data, mimetype, ...caption };
+    else if (/^audio\//.test(mimetype))
+      content = {
+        audio: data,
+        mimetype,
+        ...(media.voice ? { ptt: true } : {}),
+        ...(media.seconds ? { seconds: Math.round(media.seconds) } : {}),
+      };
     else
       content = {
         document: data,
         mimetype: mimetype || "application/octet-stream",
         fileName,
-        ...(caption ? { caption } : {}),
+        ...caption,
       };
     return this.send(chatId, content, options);
   }

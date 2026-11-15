@@ -4,6 +4,7 @@ interface Preferences {
   notifications: boolean;
   preview: boolean;
   presence: boolean;
+  links: boolean;
 }
 /** App-wide choices for new-message notifications, saved as they change. */
 export function Notifications() {
@@ -67,6 +68,22 @@ export function Notifications() {
           onChange={(e) => change({ presence: e.target.checked })}
         />
         Show when I am online and typing
+      </label>
+      <h3>Link previews</h3>
+      <p className="muted">
+        When you type a link, Wagate opens that page from this computer to
+        read its title and picture, as WhatsApp does, and sends them along.
+        The site sees your internet address. Turn this off to send links
+        without a preview.
+      </p>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          disabled={!prefs}
+          checked={prefs?.links ?? true}
+          onChange={(e) => change({ links: e.target.checked })}
+        />
+        Add a preview to links I send
       </label>
       {error ? (
         <p role="alert" className="inline-error">

@@ -89,6 +89,10 @@ Up to 10 numbers are supported. **Rename** works for every profile. **Remove** d
 - **Search** in the chat list matches chat names and message text stored on this device. Opening a result loads the chat back to that message (up to its 2,000 newest messages) and highlights it. Matching ignores case for unaccented Latin letters only.
 - **Group events** such as people joining, leaving, being made admin, and changes to the group name, description, photo or settings appear as centred lines. They never count as unread, notify, or reach Copilot.
 - **Online and typing:** while a chat is open in the focused window, WhatsApp shows you as online and as typing, and Wagate shows the same for the other person (or who is typing in a group). Wagate goes offline when the window loses focus, the chat is closed, or after 90 seconds without a sign of life. Your phone may not ring for new messages while you show as online. **WhatsApp → Online and typing** turns all of this off.
+- **Chat actions:** right-click a chat, or use **⋯** in its header, to mark it unread or read, mute it (8 hours, a week, or always), archive it, block the person, or delete the chat. These are made on WhatsApp, so your phone follows, and need WhatsApp connected. Deleting removes the chat's messages from this device and deletes the chat on your phone; a group you are still in returns with its next message. Pins stay local to Wagate.
+- **Mentions:** in a group, type `@` and pick a member. The composer shows their name; the message carries the mention, so they are notified as usual.
+- **Link previews:** when you type a link, Wagate opens that page from this computer, reads its title, description and picture, and sends them with the message. The site sees your internet address, as it does with WhatsApp's own apps. Addresses on this computer or your local network are never opened. Remove a preview with ✕ before sending, or turn previews off under **WhatsApp → Link previews**. Previews on received and sent messages are shown as cards.
+- **Voice messages:** the microphone button appears while the message box is empty. Recording asks for microphone access the first time, runs up to 10 minutes, and is sent as a voice message; ✕ or Esc discards it. Audio is recorded in the format the system provides (MP4/AAC on macOS and Windows).
 
 ## Terms and first launch
 
@@ -98,7 +102,7 @@ On first launch Wagate shows a summary of the [terms of use](TERMS.md) and does 
 
 Closing the window does not stop Wagate: it keeps every number connected and keeps receiving messages. Reopen it from the tray icon or the Dock; **Quit Wagate** (tray menu, or Cmd+Q on macOS) stops it and closes the local API. Opening Wagate while it is already running brings the existing window forward.
 
-A new incoming message raises a desktop notification when the window is hidden or not in front. Chats muted or archived on WhatsApp stay quiet, as do history sync and your own messages. The Dock badge and tray tooltip count chats with unread messages across all numbers, leaving out muted and archived ones. **WhatsApp → Notifications** turns notifications off or hides the sender and message text. Mute state follows WhatsApp; it cannot be changed from Wagate yet.
+A new incoming message raises a desktop notification when the window is hidden or not in front. Chats muted or archived on WhatsApp stay quiet, as do history sync and your own messages. The Dock badge and tray tooltip count chats with unread messages across all numbers, leaving out muted and archived ones. **WhatsApp → Notifications** turns notifications off or hides the sender and message text. Mute a chat from its menu; the mute applies on your phone too.
 
 If the gateway process stops unexpectedly, Wagate restarts it within a few seconds; after five failed starts in a row it stops trying and asks you to reopen the app.
 
@@ -127,6 +131,8 @@ curl http://127.0.0.1:8787/v1/messages/send \
   -H 'Content-Type: application/json' \
   -d '{"to":"60123456789","text":"Hello from the shop number"}'
 ```
+
+`POST /v1/messages/send` also accepts `mentions` (WhatsApp ids of people the text names as `@<number>`) and `linkPreview` (`url`, `title`, optional `description` and a small base64 JPEG `thumbnail`; the text must contain the link). `POST /v1/messages/send-media` accepts `voice: true` with optional `seconds` to send audio as a voice message.
 
  `/internal/*` is desktop-only: external keys cannot manage keys, pair WhatsApp, configure AI, or read credentials.
 
@@ -225,7 +231,7 @@ Desktop data uses Tauri’s app-data directory, normally `~/Library/Application 
 - `profiles/<profile id>/wagate.sqlite`: each further profile's own chats, messages, contact names, drafts, broadcasts, automations, settings and encrypted WhatsApp session. Removing a profile deletes its directory.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts), version 7 unlimited local inbox pin overrides, version 8 group automation settings and posting history, version 9 LID phone numbers, version 13 WhatsApp mute state, version 14 stored profile pictures, and version 10 the profile list (with the existing data becoming the Main profile) and per-key profile limits to existing databases. Profile databases use the same schema. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts), version 7 unlimited local inbox pin overrides, version 8 group automation settings and posting history, version 9 LID phone numbers, version 13 WhatsApp mute state, version 14 stored profile pictures, version 15 the block list and link preview pictures, and version 10 the profile list (with the existing data becoming the Main profile) and per-key profile limits to existing databases. Profile databases use the same schema. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
 
 WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere); every profile uses that one key, so adding numbers adds no credential-store prompts. There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 
