@@ -229,6 +229,8 @@ let connection: Snapshot["connection"] = {
   status: "connected",
   account: "60000000000@s.whatsapp.net",
 };
+let termsAccepted = false;
+let preferences = { notifications: true, preview: true, presence: true };
 let config = {
   ai: {
     model: "openai/gpt-4o-mini",
@@ -646,6 +648,8 @@ export async function previewRequest(
           : { phone, status: "added" },
       ),
     };
+  if (/^\/internal\/groups\/[^/]+\/leave$/.test(url.pathname))
+    return { success: true };
   if (url.pathname.startsWith("/internal/group-imports"))
     return groupImportRequest(url.pathname, method, data);
   if (url.pathname === "/internal/snapshot") {
@@ -653,6 +657,7 @@ export async function previewRequest(
     advanceGroupImport();
     const id = url.searchParams.get("chatId");
     return {
+      termsAccepted,
       health: {
         status: "ok",
         database: "connected",
@@ -704,6 +709,36 @@ export async function previewRequest(
     if (path === "/internal/tunnel/install")
       tunnel = { ...tunnel, installed: true };
     return { ...tunnel };
+  }
+  if (/^\/internal\/chats\/[^/]+\/avatar$/.test(url.pathname)) return { data: null };
+  if (/^\/internal\/(chats\/[^/]+\/presence|presence\/away)$/.test(url.pathname))
+    return { success: true, active: false };
+  if (url.pathname === "/internal/search") {
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    return {
+      results: messages
+        .filter((m) => m.type !== "system" && m.text?.toLowerCase().includes(q))
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, 40)
+        .map((m) => ({
+          id: m.id,
+          chatId: m.chatId,
+          direction: m.direction,
+          type: m.type,
+          senderName: m.senderName ?? null,
+          snippet: (m.text ?? "").replace(/\s+/g, " ").slice(0, 140),
+          timestamp: m.timestamp,
+          position: messages.filter((n) => n.chatId === m.chatId && n.timestamp >= m.timestamp).length,
+        })),
+    };
+  }
+  if (path === "/internal/terms/accept") {
+    termsAccepted = true;
+    return { success: true };
+  }
+  if (path === "/internal/preferences") {
+    if (method === "PUT") preferences = { ...preferences, ...(data as Partial<typeof preferences>) };
+    return { ...preferences };
   }
   if (path === "/internal/settings") {
     if (method === "PUT") {
@@ -851,6 +886,8 @@ export async function previewRequest(
     return { success: true, messageId: id };
   }
   if (path === "/v1/messages/send" || path.endsWith("/send")) {
+    // Like a real send, which waits for WhatsApp to accept the message.
+    await new Promise((r) => setTimeout(r, 900));
     const draft = drafts.find((d) => d.id === path.split("/")[3]);
     const id = crypto.randomUUID();
     const chatId = draft?.chatId || String(data?.chatId);

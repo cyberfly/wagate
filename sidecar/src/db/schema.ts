@@ -188,6 +188,20 @@ UPDATE media_cache SET size=length(data);
 CREATE INDEX media_cache_used ON media_cache(created_at);
 PRAGMA user_version = 12;
 `;
+// A chat muted on WhatsApp stays quiet here: muted_until is when the mute
+// ends, -1 for a mute with no end, NULL when not muted.
+export const muteSchema = `
+ALTER TABLE chats ADD COLUMN muted_until INTEGER;
+PRAGMA user_version = 13;
+`;
+// Profile pictures of chats. data is NULL when the chat has none or hides it;
+// changed_at moves only when the picture itself changes.
+export const avatarSchema = `
+CREATE TABLE avatars (
+ id TEXT PRIMARY KEY, data BLOB, checked_at INTEGER NOT NULL, changed_at INTEGER NOT NULL
+);
+PRAGMA user_version = 14;
+`;
 /** Applied in order; entry N moves the database from version N to N+1. */
 export const migrations = [
   schema,
@@ -202,4 +216,6 @@ export const migrations = [
   profilesSchema,
   messageFeaturesSchema,
   unreadSchema,
+  muteSchema,
+  avatarSchema,
 ];

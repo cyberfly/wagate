@@ -196,3 +196,34 @@ test("a few numbers can be added straight from a group chat", async () => {
     .toContain("admin");
   expect(provider.addCalls).toHaveLength(1);
 });
+test("leaving a group pauses its automation and waits for a running import", async () => {
+  const s = setup();
+  const leave = (groupId = group) =>
+    s.call(`/internal/groups/${encodeURIComponent(groupId)}/leave`, "POST");
+  s.settings.set("ai.configured", "true");
+  await s.automations.save(group, {
+    topics: "AI tools",
+    instructions: "",
+    source: "mixed",
+    delivery: "approval",
+    timeZone: "Asia/Kuala_Lumpur",
+    schedule: { kind: "weekly", weekdays: [1], times: ["09:00"] },
+    enabled: true,
+  });
+  const job = (await (
+    await s.call("/internal/group-imports", "POST", { ...pace, groupId: group, members: members(6) })
+  ).json()) as GroupImport;
+  const blocked = await leave();
+  expect(blocked.status).toBe(400);
+  expect(((await blocked.json()) as { error: string }).error).toContain("Cancel it first");
+  expect(s.provider.leaveCalls).toEqual([]);
+  await s.call(`/internal/group-imports/${job.id}/cancel`, "POST");
+
+  expect(((await (await leave("60123456789@s.whatsapp.net")).json()) as { error: string }).error)
+    .toBe("Invalid group");
+  const res = await leave();
+  expect(res.status).toBe(200);
+  expect(s.provider.leaveCalls).toEqual([group]);
+  expect(s.automations.list().find((a) => a.chatId === group)?.enabled).toBe(false);
+  s.close();
+});

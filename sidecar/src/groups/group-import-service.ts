@@ -111,6 +111,14 @@ export class GroupImportService {
       );
     return { results: await this.provider.addGroupParticipants(groupId, list) };
   }
+  /** Leaves a group, unless an import into it is still running. */
+  async leave(groupId: string) {
+    if (!/^\d{5,20}(?:-\d{5,20})?@g\.us$/.test(groupId))
+      throw new Error("Invalid group");
+    if (this.imports.some((i) => i.groupId === groupId && i.status === "running"))
+      throw new Error("Group import into this group is running. Cancel it first.");
+    await this.provider.leaveGroup(groupId);
+  }
   cancel(id: string) {
     const job = this.find(id);
     if (job.status !== "running") throw new Error("Group import is not running");

@@ -2,6 +2,8 @@
 
 A local-first WhatsApp desktop gateway: Tauri 2, React, TypeScript, a compiled Bun sidecar, Baileys, SQLite, and OpenRouter Copilot. This implementation targets the supplied plan’s **v0.1 MVP**, plus multiple WhatsApp numbers (profiles), optional Cloudflare Tunnel publishing, CSV broadcasts, and scheduled AI group posts. Automatic chat replies, webhooks, MCP, and media processing remain later milestones.
 
+> **Wagate is an independent, unofficial project.** It is not affiliated with, endorsed by, or supported by WhatsApp or Meta. "WhatsApp" is a trademark of its owner and is used here only to say what Wagate connects to. Wagate links to your account through an interface WhatsApp does not officially support, so WhatsApp may restrict or ban a number that uses it, especially for bulk or automated messaging. Read the [terms of use](TERMS.md) before you link a number.
+
 ## Screenshots
 
 |                                                                                                             |                                                                                                                                       |
@@ -81,6 +83,25 @@ All profiles stay connected at once, so messages keep arriving for every number 
 
 Up to 10 numbers are supported. **Rename** works for every profile. **Remove** deletes a profile's chats, messages, broadcasts, automations and session from this computer; when the number is connected, Wagate also unlinks it from the phone, otherwise remove it from **Linked Devices** on the phone yourself. The Main profile cannot be removed: use **Reset session** to link a different number to it. If the same number is linked to two profiles, the second one shows a warning, since both would receive the same messages.
 
+## Inbox details
+
+- **Profile pictures** are fetched from WhatsApp only for chats you scroll to, one at a time, and kept in the local database. A stored picture is checked again after a week. Chats without a visible picture show initials.
+- **Search** in the chat list matches chat names and message text stored on this device. Opening a result loads the chat back to that message (up to its 2,000 newest messages) and highlights it. Matching ignores case for unaccented Latin letters only.
+- **Group events** such as people joining, leaving, being made admin, and changes to the group name, description, photo or settings appear as centred lines. They never count as unread, notify, or reach Copilot.
+- **Online and typing:** while a chat is open in the focused window, WhatsApp shows you as online and as typing, and Wagate shows the same for the other person (or who is typing in a group). Wagate goes offline when the window loses focus, the chat is closed, or after 90 seconds without a sign of life. Your phone may not ring for new messages while you show as online. **WhatsApp → Online and typing** turns all of this off.
+
+## Terms and first launch
+
+On first launch Wagate shows a summary of the [terms of use](TERMS.md) and does not open until you accept them: it is unofficial, your number can be restricted, you may only message people who agreed, and there is no warranty. Acceptance is stored locally and asked again only when the terms change in substance.
+
+## Background and notifications
+
+Closing the window does not stop Wagate: it keeps every number connected and keeps receiving messages. Reopen it from the tray icon or the Dock; **Quit Wagate** (tray menu, or Cmd+Q on macOS) stops it and closes the local API. Opening Wagate while it is already running brings the existing window forward.
+
+A new incoming message raises a desktop notification when the window is hidden or not in front. Chats muted or archived on WhatsApp stay quiet, as do history sync and your own messages. The Dock badge and tray tooltip count chats with unread messages across all numbers, leaving out muted and archived ones. **WhatsApp → Notifications** turns notifications off or hides the sender and message text. Mute state follows WhatsApp; it cannot be changed from Wagate yet.
+
+If the gateway process stops unexpectedly, Wagate restarts it within a few seconds; after five failed starts in a row it stops trying and asks you to reopen the app.
+
 ## REST API
 
 Create a scoped key in **API access**, and save its one-time value. Only a SHA-256 hash is stored. Revocation takes effect immediately. Tauri uses a separate random credential per launch; the browser UI never receives it.
@@ -118,7 +139,7 @@ curl http://127.0.0.1:8787/v1/messages/send \
 
 Provide either `to` (international number, optional `+`) or `chatId` (WhatsApp JID), plus 1–10,000 characters of text. The response contains `success`, `messageId`, and the normalized message. Success means provider acceptance, not recipient delivery/read confirmation. Do not automatically retry timed-out sends; check delivery first to avoid duplicates.
 
-History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The UI polls every two seconds and shows the latest 50 messages per chat. The chat list has no count cap. A chat's `name`, in the UI and `GET /v1/chats`, comes from WhatsApp only, in this order: the name saved in your phone's contacts, WhatsApp's own chat name (such as a group subject), then the name the person set on their WhatsApp profile. Without any of these it is the chat ID. Saved names arrive through contact sync, and profile names with each incoming message.
+History pages are chronological; `nextCursor` retrieves older messages, with limits of 1–100. The desktop UI refreshes when the gateway reports a change (with a 15-second safety poll) and shows the latest 50 messages per chat. The chat list has no count cap. A chat's `name`, in the UI and `GET /v1/chats`, comes from WhatsApp only, in this order: the name saved in your phone's contacts, WhatsApp's own chat name (such as a group subject), then the name the person set on their WhatsApp profile. Without any of these it is the chat ID. Saved names arrive through contact sync, and profile names with each incoming message.
 
 The inbox fills the window with a compact navigation rail, searchable chat list, and conversation pane. Filter by **All**, **Pinned**, **Groups**, or **Archived**. Pin or unpin from a chat row or the conversation header; there is no pin count limit. Pins are saved in Wagate's local database, survive restarts, and override subsequent WhatsApp pin sync without changing pins on your phone. Until you make a local choice, a chat follows its synced WhatsApp pin state. Pinned chats appear first, most recently pinned first, followed by last activity. Enter sends a message; Shift + Enter adds a line. Unsent text stays with its chat when you switch conversations, and incoming messages preserve your scroll position when reading older messages. Narrow windows show one pane at a time with a back button.
 
@@ -144,9 +165,9 @@ Quick-tunnel caveats, all from Cloudflare: the address changes on every start, `
 2. Check the **Phone number column** (detected automatically for headers such as `Phone`, `Mobile`, or `WhatsApp`). Numbers may include `+`, spaces, dashes, or brackets. Local numbers starting with `0` need a **Country code**, such as `60`.
 3. Write the message with placeholders: `{{First Name}}` fills from that column (case-insensitive), and `{{Website|none}}` uses `none` when the cell is empty. Click a column chip to insert it.
 4. Review each person’s message in the preview and the recipients table. Rows with an invalid number, a duplicate number, or an empty message are left out automatically; untick any row to leave it out yourself. A placeholder that matches no column blocks sending.
-5. **Review and send**, then confirm.
+5. **Review and send**, confirm that everyone on the list has agreed to hear from you, then send. Lists over 200 people show a warning about number restrictions.
 
-Messages go out with a random gap, 10–20 seconds by default and 5–600 seconds allowed. Sending many near-identical messages quickly is a common reason WhatsApp restricts a number, so keep the gap generous and send only to people who expect to hear from you. Only one broadcast sends at a time, and Wagate must stay open.
+Messages go out with a random gap, 30–60 seconds by default and 5–600 seconds allowed. Sending many near-identical messages quickly is a common reason WhatsApp restricts a number, so keep the gap generous and send only to people who expect to hear from you. Only one broadcast sends at a time, and Wagate must stay open.
 
 Progress cards show sent, pending, and uncertain counts per broadcast, with **Pause**, **Resume**, and **Cancel**. Sent messages also appear in the inbox, named only as WhatsApp knows the person; CSV names label the broadcast and its send log, never chats. Safety rules follow the rest of Wagate:
 
@@ -204,7 +225,7 @@ Desktop data uses Tauri’s app-data directory, normally `~/Library/Application 
 - `profiles/<profile id>/wagate.sqlite`: each further profile's own chats, messages, contact names, drafts, broadcasts, automations, settings and encrypted WhatsApp session. Removing a profile deletes its directory.
 - `logs/app.log` and `logs/app.log.1`: structured metadata, rotated around 2 MB.
 
-SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts), version 7 unlimited local inbox pin overrides, version 8 group automation settings and posting history, version 9 LID phone numbers, and version 10 the profile list (with the existing data becoming the Main profile) and per-key profile limits to existing databases. Profile databases use the same schema. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
+SQLite uses WAL, foreign keys, busy timeout, and versioned transactional migrations; version 2 adds the broadcast tables, version 3 the send log, version 4 contact names, version 5 delivery receipts, version 6 chat pin and archive state (removing the CSV names version 4 had copied into contacts), version 7 unlimited local inbox pin overrides, version 8 group automation settings and posting history, version 9 LID phone numbers, version 13 WhatsApp mute state, version 14 stored profile pictures, and version 10 the profile list (with the existing data becoming the Main profile) and per-key profile limits to existing databases. Profile databases use the same schema. Accounts, webhooks, and AI-profile tables reserve space for later milestones.
 
 WhatsApp/Signal credentials and OpenRouter keys use AES-256-GCM encryption, including record-ID authentication. A per-data-directory master key is held in the OS credential store via `Bun.secrets` (macOS Keychain; platform equivalent elsewhere); every profile uses that one key, so adding numbers adds no credential-store prompts. There is no plaintext credential fallback. Locked/unavailable secure storage fails visibly within 12 seconds. Unlock the OS credential store and allow Wagate access before retrying; retries do not reset the session. A database backup alone cannot restore secrets without its original OS key.
 
@@ -229,3 +250,7 @@ React → Tauri HTTP bridge → authenticated loopback API
 Baileys types stay under `sidecar/src/messaging/baileys/`. Repositories own historical reads; SQLite is authoritative. AI consumes normalized messages and sends through the same message service as REST/UI. JavaScript receives no shell-execution permission.
 
 References: [Tauri sidecars](https://v2.tauri.app/develop/sidecar/), [Baileys](https://github.com/WhiskeySockets/Baileys), [OpenRouter API](https://openrouter.ai/docs/api_reference/overview). Baileys is pinned to `7.0.0-rc14`; verify protocol compatibility when upgrading.
+
+## License
+
+[MIT](LICENSE). Use of Wagate is also subject to the [terms of use](TERMS.md).

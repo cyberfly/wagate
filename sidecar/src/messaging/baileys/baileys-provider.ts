@@ -99,6 +99,12 @@ export class BaileysProvider implements MessagingProvider {
     );
     return addResults(phones, replies);
   }
+  async leaveGroup(groupId: string) {
+    const socket = this.socket;
+    if (!socket || this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    await socket.groupLeave(groupId);
+  }
   private update(state: ConnectionState) {
     this.state = state;
     this.events.connection(this.getConnectionState());
@@ -293,6 +299,19 @@ export class BaileysProvider implements MessagingProvider {
       socket.ev.on("contacts.update", (contacts) => {
         if (active()) this.receiveContacts(contacts);
       });
+      socket.ev.on("presence.update", ({ id, presences }) => {
+        if (!active() || !id) return;
+        const states = ["available", "unavailable", "composing", "recording", "paused"] as const;
+        for (const [participant, presence] of Object.entries(presences ?? {})) {
+          const state = states.find((s) => s === presence?.lastKnownPresence);
+          if (state)
+            this.events.presence({
+              chatId: jidNormalizedUser(id),
+              participant: jidNormalizedUser(participant),
+              state,
+            });
+        }
+      });
       socket.ev.on("lid-mapping.update", ({ lid, pn }) => {
         if (active()) this.receiveLinks([{ id: lid, phoneNumber: pn }]);
       });
@@ -320,12 +339,13 @@ export class BaileysProvider implements MessagingProvider {
   }
   /**
    * Downloads account-state collections from scratch: saved contacts live in
-   * critical_unblock_low, pins and archives in regular_low. That sync only
+   * critical_unblock_low, pins and archives in regular_low, mutes in
+   * regular_high. That sync only
    * sends changes after the first pairing, so state synced before Wagate
    * stored it never arrives otherwise.
    */
   async resyncAccountState(
-    collections: ("critical_unblock_low" | "regular_low")[],
+    collections: ("critical_unblock_low" | "regular_low" | "regular_high")[],
   ) {
     const socket = this.socket;
     if (!socket || this.state.status !== "connected")
@@ -476,6 +496,33 @@ export class BaileysProvider implements MessagingProvider {
   }
   async forward(target: StoredMessage, chatId: string) {
     return this.send(chatId, { forward: this.rebuild(target) });
+  }
+  async setPresence(
+    state: "available" | "unavailable" | "composing" | "paused",
+    chatId?: string,
+  ) {
+    await this.connected().sendPresenceUpdate(state, chatId);
+  }
+  async watchPresence(chatId: string) {
+    await this.connected().presenceSubscribe(chatId);
+  }
+  async profilePicture(chatId: string) {
+    const socket = this.connected();
+    let url: string | undefined;
+    try {
+      url = await socket.profilePictureUrl(chatId, "preview");
+    } catch (error) {
+      // No picture, or one this account may not see.
+      const code = (error as { output?: { statusCode?: number } })?.output?.statusCode;
+      if (code === 404 || code === 401 || code === 403) return null;
+      throw error;
+    }
+    if (!url) return null;
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error("Profile picture could not be downloaded");
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (!data.length || data.length > 512 * 1024) return null;
+    return data;
   }
   thumbnail(target: StoredMessage) {
     return embeddedThumbnail(target.mediaSource);

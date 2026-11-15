@@ -4300,6 +4300,16 @@ nav button:hover { color: #d7dae0; }
   z-index: 3;
 }
 .message.incoming .message-actions { right: auto; left: calc(100% + 6px); }
+/* Spans the gap to the bubble, so the bar stays while the pointer crosses it. */
+.message-actions::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 100%;
+  width: 8px;
+}
+.message.incoming .message-actions::before { left: auto; right: 100%; }
 .message:hover .message-actions, .message:focus-within .message-actions, .message-actions.open {
   opacity: 1;
   pointer-events: auto;
@@ -4567,4 +4577,117 @@ nav button:hover { color: #d7dae0; }
   background: #3e4451;
   box-shadow: 0 8px 20px #0008;
   overflow-wrap: anywhere;
+}
+
+/* The send button stays bright while its message is on the way. */
+.composer button.sending:disabled { opacity: 1; cursor: progress; }
+.composer button.sending .spinner { width: 16px; height: 16px; }
+
+/* Shown instead of a blank window when a screen fails to draw. */
+.crash-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.crash-screen .panel {
+  max-width: 460px;
+  display: grid;
+  gap: 12px;
+}
+.crash-detail {
+  margin: 0;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.notification-settings {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+}
+.notification-settings h3 {
+  margin: 0;
+}
+/* A muted chat's unread count is shown, but does not call for attention. */
+.unread-badge.muted-chat {
+  opacity: 0.5;
+}
+
+/* The terms of use, shown before the app on first launch. */
+.terms-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+}
+.terms-screen .panel {
+  max-width: 600px;
+  display: grid;
+  gap: 14px;
+}
+.terms-screen h2 {
+  margin: 0;
+}
+.terms-points {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 10px;
+  line-height: 1.45;
+}
+
+/* A group event, such as someone joining: a quiet centred line. */
+.message-system {
+  max-width: 80%;
+  text-align: center;
+  line-height: 1.4;
+  margin: 4px auto 10px;
+}
+.message-system .mention {
+  font-weight: 600;
+}
+.message-system.highlighted {
+  outline: 2px solid #6757e8;
+}
+
+/* Messages found by search, listed under the matching chats. */
+.search-heading {
+  padding: 12px 16px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+.search-hit .chat-info small {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* A profile picture fills the avatar circle in place of initials. */
+.avatar.has-photo {
+  overflow: hidden;
+  padding: 0;
+  background: none;
+}
+.avatar.has-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* "typing…" or "online" under the open chat's name. */
+.chat-activity {
+  color: #1f9d55;
+  font-weight: 600;
 }

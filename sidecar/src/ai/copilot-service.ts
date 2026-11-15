@@ -117,7 +117,7 @@ export class CopilotService {
             ? [{ role: "system" as const, content: scopeInstructions }]
             : []),
           { role: "system", content: config.systemPrompt },
-          ...relevant.map((m) => ({
+          ...relevant.filter((m) => m.type !== "system").map((m) => ({
             role:
               m.direction === "incoming"
                 ? ("user" as const)

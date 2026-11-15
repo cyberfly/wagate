@@ -44,6 +44,8 @@ function duration(seconds: number) {
   if (minutes < 60) return `about ${minutes} min`;
   return `about ${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
+/** Above this many recipients, the confirmation warns about restrictions. */
+const largeList = 200;
 export function Broadcast({ broadcasts, connected, busy, act }: Props) {
   const [csv, setCsv] = useState<{ file: string; table: CsvTable } | null>(
       null,
@@ -53,8 +55,10 @@ export function Broadcast({ broadcasts, connected, busy, act }: Props) {
     [countryCode, setCountryCode] = useState(""),
     [name, setName] = useState(""),
     [template, setTemplate] = useState(""),
-    [minDelay, setMinDelay] = useState(10),
-    [maxDelay, setMaxDelay] = useState(20),
+    // The careful pace: bulk sending is what gets numbers restricted.
+    [minDelay, setMinDelay] = useState(30),
+    [maxDelay, setMaxDelay] = useState(60),
+    [agreed, setAgreed] = useState(false),
     [excluded, setExcluded] = useState<Set<number>>(new Set()),
     [current, setCurrent] = useState(0),
     [confirming, setConfirming] = useState(false),
@@ -386,8 +390,24 @@ export function Broadcast({ broadcasts, connected, busy, act }: Props) {
                 until it finishes. You can pause or cancel, but sent messages
                 cannot be recalled.
               </p>
+              {ready.length > largeList ? (
+                <p role="note" className="inline-error">
+                  {ready.length} is a long list. WhatsApp restricts numbers
+                  that message many people at once, most of all new numbers
+                  and people who have not saved you. Consider sending in
+                  smaller batches over several days.
+                </p>
+              ) : null}
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={agreed}
+                  onChange={(e) => setAgreed(e.target.checked)}
+                />
+                Everyone on this list has agreed to get messages from me.
+              </label>
               <div className="button-row">
-                <button disabled={busy || !!blocker} onClick={() => void send()}>
+                <button disabled={busy || !!blocker || !agreed} onClick={() => void send()}>
                   Send {ready.length} now
                 </button>
                 <button
@@ -402,7 +422,10 @@ export function Broadcast({ broadcasts, connected, busy, act }: Props) {
             <div className="button-row">
               <button
                 disabled={busy || !!blocker}
-                onClick={() => setConfirming(true)}
+                onClick={() => {
+                  setAgreed(false);
+                  setConfirming(true);
+                }}
               >
                 Review and send{ready.length ? ` to ${ready.length}` : ""}
               </button>

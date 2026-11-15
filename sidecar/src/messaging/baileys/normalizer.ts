@@ -48,6 +48,7 @@ export function normalizeChat(chat: {
   pinned?: unknown;
   archived?: boolean | null;
   unreadCount?: number | null;
+  muteEndTime?: unknown;
 }, history = false): ChatUpdate | null {
   if (!chat.id || !/@(s\.whatsapp\.net|lid|g\.us)$/.test(chat.id)) return null;
   const times = [
@@ -65,6 +66,16 @@ export function normalizeChat(chat: {
   if (times.length) update.lastMessageAt = Math.max(...times);
   if (chat.pinned !== undefined) update.pinnedAt = millis(chat.pinned) ?? null;
   if (typeof chat.archived === "boolean") update.archived = chat.archived;
+  // Zero or null is not muted; a negative end is a mute with no end.
+  if (chat.muteEndTime !== undefined) {
+    const raw = chat.muteEndTime;
+    const end =
+      raw && typeof raw === "object" && "toNumber" in raw
+        ? (raw as { toNumber(): number }).toNumber()
+        : Number(raw ?? 0);
+    update.mutedUntil =
+      !Number.isFinite(end) || end === 0 ? null : end < 0 ? -1 : (millis(end) ?? null);
+  }
   // History sync states the count. Later updates add one per live message,
   // which Wagate counts itself; only "read" (0) and "marked unread" (-1),
   // from this account's other devices, are taken from them.
@@ -360,6 +371,89 @@ export function embeddedThumbnail(source: Uint8Array | null | undefined) {
   }
   return null;
 }
+/** A person named in a group event: a plain id, or JSON with both of their ids. */
+function stubPerson(value: string) {
+  if (value.startsWith("{"))
+    try {
+      const p = JSON.parse(value) as { id?: string; phoneNumber?: string };
+      // The phone number matches names saved in your phone.
+      return p.phoneNumber || p.id || null;
+    } catch {
+      return null;
+    }
+  return /@(s\.whatsapp\.net|lid)$/.test(value) ? value : null;
+}
+/**
+ * A group event WhatsApp records in the chat: people joining and leaving,
+ * admin changes, a new name, description, photo or setting. People are named
+ * as `@<number>` mentions, so the app shows their names; our own account is
+ * "You".
+ */
+function groupEvent(raw: WAMessage, self: Self): { text: string; mentions: string[] } | null {
+  const T = WAMessageStubType;
+  const params = ((raw.messageStubParameters ?? []) as unknown[]).filter(
+    (p): p is string => typeof p === "string",
+  );
+  const mentions = new Set<string>();
+  const name = (jid: string) => {
+    if (isSelf(jid, self)) return "You";
+    const id = jidNormalizedUser(jid);
+    mentions.add(id);
+    return "@" + id.split("@")[0];
+  };
+  const actorId = sender(raw);
+  const actor = actorId && actorId !== raw.key.remoteJid ? name(actorId) : null;
+  const people = params.map(stubPerson).filter((p): p is string => !!p);
+  const list = people.map(name);
+  const targets =
+    list.length > 1 ? list.slice(0, -1).join(", ") + " and " + list.at(-1) : (list[0] ?? "");
+  const are = list.length > 1 || list[0] === "You" ? "are" : "is";
+  const self1 = list.length === 1 && actor === list[0];
+  const quoted = params[0] ? ` “${params[0].slice(0, 200)}”` : "";
+  let text: string | null = null;
+  switch (raw.messageStubType) {
+    case T.GROUP_CREATE:
+      text = (actor ?? "Someone") + " created this group" + (quoted ? "," + quoted : "");
+      break;
+    case T.GROUP_PARTICIPANT_ADD:
+      if (targets) text = actor && !self1 ? `${actor} added ${targets}` : `${targets} joined`;
+      break;
+    case T.GROUP_PARTICIPANT_INVITE:
+      if (targets) text = `${targets} joined using an invite link`;
+      break;
+    case T.GROUP_PARTICIPANT_REMOVE:
+      if (targets) text = actor && !self1 ? `${actor} removed ${targets}` : `${targets} left`;
+      break;
+    case T.GROUP_PARTICIPANT_LEAVE:
+      if (targets || actor) text = `${targets || actor} left`;
+      break;
+    case T.GROUP_PARTICIPANT_PROMOTE:
+      if (targets) text = `${targets} ${are} now an admin`;
+      break;
+    case T.GROUP_PARTICIPANT_DEMOTE:
+      if (targets) text = `${targets} ${are} no longer an admin`;
+      break;
+    case T.GROUP_CHANGE_SUBJECT:
+      text = actor ? `${actor} changed the group name to${quoted}` : `The group name changed to${quoted}`;
+      break;
+    case T.GROUP_CHANGE_DESCRIPTION:
+      text = actor ? `${actor} changed the group description` : "The group description changed";
+      break;
+    case T.GROUP_CHANGE_ICON:
+      text = actor ? `${actor} changed the group photo` : "The group photo changed";
+      break;
+    case T.GROUP_CHANGE_ANNOUNCE:
+      text = params[0] === "on" ? "Only admins can send messages now" : "Everyone can send messages now";
+      break;
+    case T.GROUP_CHANGE_RESTRICT:
+      text =
+        params[0] === "on"
+          ? "Only admins can edit the group settings now"
+          : "Everyone can edit the group settings now";
+      break;
+  }
+  return text ? { text, mentions: [...mentions].slice(0, 50) } : null;
+}
 const statuses: Partial<Record<number, MessageStatus>> = {
   [WAMessageStatus.ERROR]: "failed",
   [WAMessageStatus.PENDING]: "pending",
@@ -385,7 +479,9 @@ export function normalizeMessage(
     return null;
   const content = normalizeMessageContent(raw.message);
   const revoked = raw.messageStubType === WAMessageStubType.REVOKE;
-  if (!revoked) {
+  const event =
+    !revoked && raw.messageStubType && jid.endsWith("@g.us") ? groupEvent(raw, self) : null;
+  if (!revoked && !event) {
     if (!content || hidden.some((k) => content[k])) return null;
     if (
       content.senderKeyDistributionMessage &&
@@ -397,7 +493,11 @@ export function normalizeMessage(
     )
       return null;
   }
-  const described = content && !revoked ? describeContent(content) : { type: "text" as const };
+  const described = event
+    ? { type: "system" as const, text: event.text }
+    : content && !revoked
+      ? describeContent(content)
+      : { type: "text" as const };
   const chatId = jidNormalizedUser(jid);
   const timestamp = Number(raw.messageTimestamp || 0) * 1000;
   if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
@@ -409,13 +509,17 @@ export function normalizeMessage(
     senderId: jidNormalizedUser(
       raw.key.fromMe && self.id ? self.id : sender(raw) || jid,
     ),
-    direction: raw.key.fromMe ? "outgoing" : "incoming",
+    direction: raw.key.fromMe && !event ? "outgoing" : "incoming",
     type: described.type,
     text: "text" in described ? described.text : undefined,
     timestamp,
   };
   if (revoked) {
     message.deletedAt = timestamp;
+    return message;
+  }
+  if (event) {
+    if (event.mentions.length) message.mentions = event.mentions.map((id) => ({ id }));
     return message;
   }
   if ("media" in described && described.media && Object.keys(described.media).length)

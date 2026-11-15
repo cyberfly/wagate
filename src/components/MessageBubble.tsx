@@ -16,7 +16,7 @@ export function forwardable(m: Message) {
 export const quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 /** Stored without its sender, so it reads as sent by the group itself. */
 export function unknownSender(m: Message) {
-  return m.direction === "incoming" && m.senderId === m.chatId;
+  return m.type !== "system" && m.direction === "incoming" && m.senderId === m.chatId;
 }
 /** One person, whether a message names them by LID or by phone number. */
 export function who(m: Message) {
@@ -45,6 +45,7 @@ const typeLabels: Record<Message["type"], string> = {
   location: "Location",
   contact: "Contact",
   poll: "Poll",
+  system: "Group update",
   unknown: "Message",
 };
 const typeIcons: Partial<Record<Message["type"], string>> = {
@@ -396,7 +397,7 @@ function ImageMedia({ message: m, open }: { message: Message; open: BubbleAction
           aria-label={sticker ? "Sticker" : "Open photo"}
           onClick={() => !sticker && open(m, media.media)}
         >
-          <img src={media.media.url} alt={sticker ? "Sticker" : m.text || "Photo"} />
+          <img src={media.media.url} alt={sticker ? "Sticker" : m.text || "Photo"} onError={media.failed} />
           {!media.media.complete ? (
             <span className="media-overlay" onClick={(e) => (e.stopPropagation(), media.retry())}>
               {media.media.error || "Couldn’t download the full photo"} · Try again
@@ -423,7 +424,7 @@ function VideoMedia({ message: m }: { message: Message }) {
         <video src={video.media.url} controls autoPlay playsInline />
       ) : (
         <button type="button" className="media-open video-poster" aria-label="Play video" onClick={() => (play ? video.retry() : setPlay(true))}>
-          {poster.status === "ready" ? <img src={poster.media.url} alt="" /> : <div className="media-loading still" />}
+          {poster.status === "ready" ? <img src={poster.media.url} alt="" onError={poster.failed} /> : <div className="media-loading still" />}
           <span className="play-button" aria-hidden="true">
             {video.status === "loading" ? <span className="spinner" /> : "▶"}
           </span>

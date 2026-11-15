@@ -1,9 +1,9 @@
 import { useState } from "react";
 /** Gaps in seconds. The sidecar accepts 5–600. */
 export const paces = [
-  { key: "careful", label: "Careful", min: 30, max: 60, note: "Safest for a new number or people who may not know you." },
-  { key: "balanced", label: "Balanced", min: 10, max: 20, note: "A sensible default for most lists." },
-  { key: "quick", label: "Quick", min: 5, max: 10, note: "Only for people who expect to hear from you." },
+  { key: "careful", label: "Careful", min: 30, max: 60, note: "The default. Safest for a new number, a long list, or people who may not know you." },
+  { key: "balanced", label: "Balanced", min: 10, max: 20, note: "For an established number and people who know you." },
+  { key: "quick", label: "Quick", min: 5, max: 10, note: "Riskiest. Only for a short list of people who are expecting this message." },
 ] as const;
 export function paceValid(min: number, max: number) {
   return (

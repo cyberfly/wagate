@@ -350,6 +350,12 @@ export function ApiAccess({
           <li>GET /v1/chats</li>
           <li>GET /v1/chats/:id/messages</li>
           <li>POST /v1/messages/send</li>
+          <li>POST /v1/messages/send-media</li>
+          <li>GET /v1/messages/:id/media</li>
+          <li>POST /v1/messages/:id/react</li>
+          <li>POST /v1/messages/:id/forward</li>
+          <li>PUT /v1/messages/:id</li>
+          <li>DELETE /v1/messages/:id</li>
           <li>GET /v1/events</li>
         </ul>
         <p>

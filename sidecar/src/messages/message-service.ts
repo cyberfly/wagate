@@ -67,12 +67,15 @@ export class MessageService {
     const inserted = this.repository.save(message);
     // A live incoming message is unread; replying, here or on the phone,
     // reads the chat as WhatsApp does.
-    if (inserted && live && !message.deletedAt)
+    // A group event, such as someone joining, is shown but never counts as
+    // unread, notifies, or asks Copilot for a reply.
+    const event = message.type === "system";
+    if (inserted && live && !message.deletedAt && !event)
       if (message.direction === "incoming") this.repository.chats.addUnread(message.chatId);
       else this.repository.chats.clearUnread(message.chatId);
     if (inserted) {
       this.events.publish(
-        live && message.direction === "incoming"
+        live && message.direction === "incoming" && !event
           ? "message.received"
           : "message.synced",
         visible(message),

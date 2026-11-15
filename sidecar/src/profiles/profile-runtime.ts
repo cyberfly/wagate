@@ -7,6 +7,8 @@ import { AutomationService } from "../automation/automation-service";
 import { BroadcastRepository } from "../broadcast/broadcast-repository";
 import { BroadcastService } from "../broadcast/broadcast-service";
 import { ChatRepository } from "../chats/chat-repository";
+import { AvatarService } from "../chats/avatar-service";
+import { PresenceService } from "../chats/presence-service";
 import { Settings } from "../config/settings";
 import { ContactRepository } from "../contacts/contact-repository";
 import { EventBus } from "../events/event-bus";
@@ -36,17 +38,21 @@ export interface RuntimeOptions {
   pace?: {
     broadcast?: (b: Broadcast) => number;
     groupImport?: (job: GroupImport) => number;
+    /** Between profile picture lookups. */
+    avatar?: number;
   };
   /** Wait before fetching account state that predates Wagate. */
   resyncDelay?: number;
 }
 // Account state synced before Wagate stored it (saved contact names; pins and
-// archives, which order the inbox) needs one fresh copy from WhatsApp. Fetch
+// archives, which order the inbox; mutes, which silence notifications) needs
+// one fresh copy from WhatsApp. Fetch
 // what is missing once, after the connection settles; a failure leaves the
 // flags unset so the next connection tries again.
 const accountState = [
   { flag: "contacts.resynced", collection: "critical_unblock_low" },
   { flag: "chats.resynced", collection: "regular_low" },
+  { flag: "mutes.resynced", collection: "regular_high" },
 ] as const;
 /**
  * One WhatsApp number with everything that belongs to it: a connection, its
@@ -70,6 +76,8 @@ export class ProfileRuntime {
   readonly broadcasts: BroadcastService;
   readonly groupImports: GroupImportService;
   readonly automations: AutomationService;
+  readonly avatars: AvatarService;
+  readonly presence: PresenceService;
   /** The latest errors, newest last, for the desktop app to show. */
   readonly alerts: { id: number; error: string }[] = [];
   private accountResync?: ReturnType<typeof setTimeout>;
@@ -91,6 +99,7 @@ export class ProfileRuntime {
         this.events.publish("messaging.connection", state);
         this.log("info", "whatsapp.state", { state: state.status });
         if (state.status === "connected") this.resyncAccountStateOnce();
+        else this.presence.reset();
       },
       message: (message, live) => this.sender.receive(message, live),
       receipt: (receipt) => {
@@ -110,6 +119,7 @@ export class ProfileRuntime {
       },
       contacts: (names) => this.contacts.save(names),
       phones: (links) => this.contacts.linkPhones(links),
+      presence: (update) => this.presence.apply(update),
       error: () => {
         this.log("error", "whatsapp.operation.failed");
         this.events.publish("messaging.error", {
@@ -119,6 +129,8 @@ export class ProfileRuntime {
       },
     });
     this.sender = new MessageService(this.provider, this.messages, this.events);
+    this.avatars = new AvatarService(db, this.provider, this.events, o.pace?.avatar);
+    this.presence = new PresenceService(db, this.provider, this.events);
     this.copilot = new CopilotService(
       o.ai,
       this.chats,
@@ -206,6 +218,8 @@ export class ProfileRuntime {
     this.broadcasts.close();
     this.groupImports.close();
     this.automations.close();
+    this.avatars.close();
+    this.presence.close();
     await this.provider.disconnect();
   }
 }

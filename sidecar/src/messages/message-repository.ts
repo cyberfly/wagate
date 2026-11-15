@@ -9,6 +9,7 @@ import type {
   Reaction,
   ReactionUpdate,
   ReceivedMessage,
+  SearchHit,
 } from "../messaging/types";
 import type { StoredMessage } from "../messaging/messaging-provider";
 import { ChatRepository } from "../chats/chat-repository";
@@ -236,7 +237,7 @@ export class MessageRepository {
     return (
       this.db
         .query(
-          `SELECT id FROM messages WHERE chat_id=? AND direction='incoming' AND deleted_at IS NULL
+          `SELECT id FROM messages WHERE chat_id=? AND direction='incoming' AND deleted_at IS NULL AND type<>'system'
            ORDER BY timestamp DESC,id DESC LIMIT ?`,
         )
         .all(chatId, count) as { id: string }[]
@@ -251,7 +252,7 @@ export class MessageRepository {
     const group = chatId.endsWith("@g.us");
     const broken = this.db
       .query(
-        `SELECT 1 FROM (SELECT sender_id,chat_id,direction,type,media_source,deleted_at FROM messages WHERE chat_id=?1 ORDER BY timestamp DESC,id DESC LIMIT 50)
+        `SELECT 1 FROM (SELECT sender_id,chat_id,direction,type,media_source,deleted_at FROM messages WHERE chat_id=?1 AND type<>'system' ORDER BY timestamp DESC,id DESC LIMIT 50)
          WHERE (?2 AND sender_id=chat_id AND direction='incoming')
             OR (type IN ('image','video','audio','document','sticker') AND media_source IS NULL AND deleted_at IS NULL) LIMIT 1`,
       )
@@ -346,6 +347,35 @@ export class MessageRepository {
             };
       }
       return message;
+    });
+  }
+  /**
+   * Messages whose text contains `query`, newest first. Matching ignores
+   * case for unaccented Latin letters.
+   */
+  search(query: string, limit = 40): SearchHit[] {
+    const needle = query.trim();
+    if (!needle) return [];
+    const rows = this.db
+      .query(
+        `SELECT m.id,m.chat_id AS chatId,m.direction,m.type,m.text,m.timestamp,
+         COALESCE(p.name,k.name,k.push_name,p.push_name) AS senderName,
+         (SELECT COUNT(*) FROM messages n WHERE n.chat_id=m.chat_id
+           AND (n.timestamp>m.timestamp OR (n.timestamp=m.timestamp AND n.id>=m.id))) AS position
+         FROM ${from} WHERE m.text LIKE ? ESCAPE '\\' AND m.deleted_at IS NULL AND m.type<>'system'
+         ORDER BY m.timestamp DESC,m.id DESC LIMIT ?`,
+      )
+      .all("%" + needle.replace(/[\\%_]/g, "\\$&") + "%", limit) as (Omit<SearchHit, "snippet"> & {
+      text: string;
+    })[];
+    return rows.map(({ text, ...row }) => {
+      const flat = text.replace(/\s+/g, " ");
+      const at = Math.max(0, flat.toLowerCase().indexOf(needle.toLowerCase()));
+      const start = Math.max(0, at - 30);
+      return {
+        ...row,
+        snippet: (start ? "…" : "") + flat.slice(start, start + 140) + (flat.length > start + 140 ? "…" : ""),
+      };
     });
   }
   page(chatId: string, limit = 50, cursor?: string): MessagePage {

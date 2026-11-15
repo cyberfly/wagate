@@ -14,9 +14,12 @@ interface MediaResponse {
   error?: string | null;
 }
 // Attachments are kept as blob URLs while the app runs, so scrolling back or
-// reopening a chat does not ask the gateway again. The oldest are let go.
+// reopening a chat does not ask the gateway again. The least recently used are
+// let go, so a chat being read keeps its pictures.
 const limit = 150;
 const cache = new Map<string, Promise<LoadedMedia>>();
+const cacheKey = (messageId: string, preview: boolean) =>
+  getActiveProfile() + "\n" + messageId + (preview ? "\npreview" : "");
 function toBlob(base64: string, mimetype: string) {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -24,9 +27,13 @@ function toBlob(base64: string, mimetype: string) {
   return new Blob([bytes], { type: mimetype });
 }
 export function loadMedia(messageId: string, preview = false) {
-  const key = getActiveProfile() + "\n" + messageId + (preview ? "\npreview" : "");
+  const key = cacheKey(messageId, preview);
   const known = cache.get(key);
-  if (known) return known;
+  if (known) {
+    cache.delete(key);
+    cache.set(key, known);
+    return known;
+  }
   const loading = request<MediaResponse>(
     `/internal/messages/${encodeURIComponent(messageId)}/media${preview ? "?preview=1" : ""}`,
   ).then((r) => ({
@@ -48,6 +55,14 @@ export function loadMedia(messageId: string, preview = false) {
     void value.then((m) => URL.revokeObjectURL(m.url)).catch(() => {});
   }
   return loading;
+}
+/** Drops a cached attachment, so the next load asks the gateway again. */
+function forgetMedia(messageId: string, preview = false) {
+  const key = cacheKey(messageId, preview);
+  const known = cache.get(key);
+  if (!known) return;
+  cache.delete(key);
+  void known.then((m) => URL.revokeObjectURL(m.url)).catch(() => {});
 }
 type State =
   | { status: "idle" | "loading"; media?: undefined; error?: undefined }
@@ -90,7 +105,16 @@ export function useMedia(messageId: string, enabled: boolean, opts: { preview?: 
       live = false;
     };
   }, [messageId, enabled, visible, opts.preview, attempt]);
-  return { ...state, ref, retry: () => setAttempt((n) => n + 1) };
+  const retry = () => {
+    forgetMedia(messageId, opts.preview);
+    setAttempt((n) => n + 1);
+  };
+  /** For an <img> or <video> that could not show the loaded file: loads it once more. */
+  const failed = () => {
+    if (attempt === 0) retry();
+    else setState({ status: "error", error: "Couldn’t show this file" });
+  };
+  return { ...state, ref, retry, failed };
 }
 /** Reads a picked or pasted file as base64 for the gateway. */
 export function readFile(file: Blob) {

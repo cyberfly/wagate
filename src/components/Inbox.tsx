@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AddMember } from "./AddMember";
+import { Avatar } from "./Avatar";
 import { EmojiPicker } from "./EmojiPicker";
 import {
   AttachIcon,
@@ -13,6 +14,7 @@ import {
   type BubbleActions,
 } from "./MessageBubble";
 import { fileSize, readFile, type LoadedMedia } from "../lib/media";
+import { formatText } from "../lib/format";
 import {
   request,
   chatTitle,
@@ -21,6 +23,8 @@ import {
   type Chat,
   type Message,
   type Draft,
+  type SearchHit,
+  type ChatPresence,
 } from "../lib/api";
 interface Props {
   chats: Chat[];
@@ -31,6 +35,13 @@ interface Props {
   /** Older stored messages exist above the loaded ones. */
   hasMore: boolean;
   loadOlder: () => void;
+  /** Who is online or typing in the open chat. */
+  presence: ChatPresence | null;
+  /** Opens a chat at one of its messages, such as a search result. */
+  openMessage: (chatId: string, messageId: string, position: number) => void;
+  /** The message to scroll to once it is loaded. */
+  target: string | null;
+  clearTarget: () => void;
   /** Shows a message in the app's notice bar. */
   notify: (text: string, kind?: "info" | "error") => void;
   connect: () => void;
@@ -72,6 +83,8 @@ export function Inbox(p: Props) {
     [editing, setEditing] = useState<{ message: Message; stash: string } | null>(null),
     [forwarding, setForwarding] = useState<Message | null>(null),
     [removing, setRemoving] = useState<Message | null>(null),
+    [leaving, setLeaving] = useState(false),
+    [sending, setSending] = useState(false),
     [emoji, setEmoji] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   /** In a direct chat every incoming message is from the chat's person. */
@@ -88,6 +101,7 @@ export function Inbox(p: Props) {
     setEditing(null);
     setForwarding(null);
     setRemoving(null);
+    setLeaving(false);
     setEmoji(false);
   }, [p.selected]);
   // An open chat is read while this window has focus, as on WhatsApp Web:
@@ -108,6 +122,70 @@ export function Inbox(p: Props) {
     window.addEventListener("focus", read);
     return () => window.removeEventListener("focus", read);
   }, [p.selected, unread]);
+  // While a chat is open in a focused window, WhatsApp shows this account as
+  // online and reports who is online or typing in it. The gateway goes
+  // offline by itself when these signs stop.
+  const presencePath = p.selected
+    ? `/internal/chats/${encodeURIComponent(p.selected)}/presence`
+    : null;
+  useEffect(() => {
+    if (!presencePath || !p.connected) return;
+    const open = () => {
+      if (document.hasFocus()) void request(presencePath, "POST", { state: "open" }).catch(() => {});
+    };
+    open();
+    const timer = setInterval(open, 45_000);
+    window.addEventListener("focus", open);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", open);
+    };
+  }, [presencePath, p.connected]);
+  useEffect(() => {
+    const away = () => void request("/internal/presence/away", "POST").catch(() => {});
+    window.addEventListener("blur", away);
+    return () => {
+      window.removeEventListener("blur", away);
+      away();
+    };
+  }, []);
+  useEffect(() => {
+    if (!p.selected) void request("/internal/presence/away", "POST").catch(() => {});
+  }, [p.selected]);
+  // "Typing…" is sent when typing starts, repeated while it goes on, and
+  // withdrawn after a pause or once the message is sent or cleared.
+  const typing = useRef<{ path: string; at: number; stop?: ReturnType<typeof setTimeout> } | null>(null);
+  const stopTyping = () => {
+    const t = typing.current;
+    if (!t) return;
+    clearTimeout(t.stop);
+    typing.current = null;
+    void request(t.path, "POST", { state: "paused" }).catch(() => {});
+  };
+  const typed = (value: string) => {
+    if (!presencePath || !p.connected) return;
+    if (!value.trim() || typing.current?.path !== presencePath) stopTyping();
+    if (!value.trim()) return;
+    const t = (typing.current ??= { path: presencePath, at: 0 });
+    if (Date.now() - t.at > 8000) {
+      t.at = Date.now();
+      void request(presencePath, "POST", { state: "composing" }).catch(() => {});
+    }
+    clearTimeout(t.stop);
+    t.stop = setTimeout(stopTyping, 5000);
+  };
+  useEffect(() => stopTyping, [p.selected]);
+  const typers = p.presence?.typing ?? [];
+  const activity = typers.length
+    ? chat?.type === "group"
+      ? typers.map((t) => t.name || phoneLabel(t.id)).slice(0, 3).join(", ") +
+        (typers.length > 1 ? " are typing…" : typers[0]!.state === "recording" ? " is recording audio…" : " is typing…")
+      : typers[0]!.state === "recording"
+        ? "recording audio…"
+        : "typing…"
+    : p.presence?.online
+      ? "online"
+      : null;
   const cancelEdit = () => {
     if (editing) setText(editing.stash);
     setEditing(null);
@@ -245,8 +323,38 @@ export function Inbox(p: Props) {
     }
     previousChat.current = p.selected;
   }, [p.messages.at(-1)?.id, p.selected]);
+  // A search result opens its chat at that message once it has loaded.
+  useEffect(() => {
+    if (!p.target || !p.messages.length) return;
+    const id = p.target;
+    if (p.messages.some((m) => m.id === id)) {
+      p.clearTarget();
+      // After the chat's own scroll to its newest message.
+      requestAnimationFrame(() => actions.jump(id));
+    } else if (!p.hasMore) {
+      p.clearTarget();
+      p.notify("That message is no longer in this chat.");
+    }
+  }, [p.target, p.messages, p.hasMore]);
   // The sidecar orders effective inbox pins first, then by activity.
   const query = search.trim().toLowerCase();
+  // Message text is searched by the gateway, shortly after typing stops.
+  const [hits, setHits] = useState<{ query: string; results: SearchHit[] } | null>(null);
+  useEffect(() => {
+    if (query.length < 2) return setHits(null);
+    let live = true;
+    const timer = setTimeout(() => {
+      request<{ results: SearchHit[] }>("/internal/search?q=" + encodeURIComponent(query)).then(
+        (r) => live && setHits({ query, results: r.results }),
+        () => live && setHits({ query, results: [] }),
+      );
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [query]);
+  const titles = new Map(p.chats.map((c) => [c.id, chatTitle(c)]));
   const pinnedCount = p.chats.filter((c) => c.pinned).length;
   const unreadChats = p.chats.filter((c) => !c.archived && c.unreadCount).length;
   const found = p.chats.filter((c) => {
@@ -267,7 +375,7 @@ export function Inbox(p: Props) {
       aria-pressed={c.id === p.selected}
       onClick={() => p.select(c.id)}
     >
-      <span className="avatar">{initials(chatTitle(c))}</span>
+      <Avatar chat={c} />
       <span className="chat-info">
         <strong>{chatTitle(c)}</strong>
         <small>
@@ -281,7 +389,8 @@ export function Inbox(p: Props) {
       <span className="chat-meta">
         {c.lastMessageAt ? <time>{lastActive(c.lastMessageAt)}</time> : null}
         {c.unreadCount ? (
-          <span className="unread-badge" aria-label={c.unreadCount + " unread"}>
+          <span className={"unread-badge" + (c.muted ? " muted-chat" : "")}
+            aria-label={c.unreadCount + " unread" + (c.muted ? ", muted" : "")}>
             {c.unreadCount > 99 ? "99+" : c.unreadCount}
           </span>
         ) : c.pinned ? (
@@ -297,21 +406,30 @@ export function Inbox(p: Props) {
     </button>
     </div>
   );
+  /** Shows a spinner on the send button when sending takes a moment. */
+  const track = (work: Promise<void>) => {
+    const slow = setTimeout(() => setSending(true), 300);
+    return work.finally(() => {
+      clearTimeout(slow);
+      setSending(false);
+    });
+  };
   const send = () => {
     if (!p.selected || p.busy || !p.connected) return;
     if (!text.trim() && !attachment) return;
     if (editing) {
       const target = editing, newText = text;
-      return p.act(async () => {
+      return track(p.act(async () => {
         if (newText.trim() !== (target.message.text || "").trim())
           await request(`/v1/messages/${encodeURIComponent(target.message.id)}`, "PUT", { text: newText });
         setText(target.stash);
         setEditing((e) => (e === target ? null : e));
-      });
+      }));
     }
     const id = p.selected, sentText = text, quoted = replyTo, file = attachment;
     nearBottom.current = true;
-    return p.act(async () => {
+    stopTyping();
+    return track(p.act(async () => {
       if (file)
         await request("/v1/messages/send-media", "POST", {
           chatId: id,
@@ -330,7 +448,7 @@ export function Inbox(p: Props) {
       setCompositions((current) => current[id] === sentText ? { ...current, [id]: "" } : current);
       setReplyTo((r) => (r === quoted ? null : r));
       setAttachment((a) => (a === file ? null : a));
-    });
+    }));
   };
   return (
     <section className={"inbox panel " + (p.selected ? "has-selection" : "")}>
@@ -383,8 +501,8 @@ export function Inbox(p: Props) {
         ) : null}
         <div className="search">
           <input
-            aria-label="Search chats"
-            placeholder="Search or start a new chat"
+            aria-label="Search chats and messages"
+            placeholder="Search chats and messages"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -400,8 +518,37 @@ export function Inbox(p: Props) {
         {filter === "Pinned" ? <div className="pin-hint">Pin as many chats as you like. Saved on this device.</div> : null}
         <div className="chat-items">
           {found.map(item)}
-          {p.chats.length > 0 && found.length === 0 ? (
-            <div className="list-empty">{query ? "No matching chats" : `No ${filter.toLowerCase()} chats`}</div>
+          {p.chats.length > 0 && found.length === 0 && !hits?.results.length ? (
+            <div className="list-empty">
+              {query ? (hits || query.length < 2 ? "No matching chats or messages" : "Searching…") : `No ${filter.toLowerCase()} chats`}
+            </div>
+          ) : null}
+          {hits?.results.length ? (
+            <>
+              <div className="search-heading">Messages</div>
+              {hits.results.map((h) => (
+                <button
+                  key={h.id}
+                  className="chat-item search-hit"
+                  onClick={() => p.openMessage(h.chatId, h.id, h.position)}
+                >
+                  <span className="chat-info">
+                    <strong>{titles.get(h.chatId) ?? phoneLabel(h.chatId)}</strong>
+                    <small>
+                      {h.direction === "outgoing"
+                        ? "You: "
+                        : h.chatId.endsWith("@g.us") && h.senderName
+                          ? h.senderName + ": "
+                          : ""}
+                      {h.snippet}
+                    </small>
+                  </span>
+                  <span className="chat-meta">
+                    <time>{lastActive(h.timestamp)}</time>
+                  </span>
+                </button>
+              ))}
+            </>
           ) : null}
           {p.chats.length === 0 ? (
             <div className="list-empty">
@@ -418,9 +565,12 @@ export function Inbox(p: Props) {
           <>
             <header className="conversation-header">
               <button className="icon-button back-to-chats" aria-label="Back to chats" onClick={() => p.select(null)}>←</button>
-              <span className="avatar">{initials(chatTitle(chat ?? { id: p.selected, name: "" }))}</span>
+              <Avatar key={p.selected} chat={chat ?? { id: p.selected, name: "" }} />
               <div className="conversation-identity">
                 <h3>{chatTitle(chat ?? { id: p.selected, name: "" })}</h3>
+                {activity ? (
+                  <small className="chat-activity" aria-live="polite">{activity}</small>
+                ) : (
                 <small>
                   {chat?.type === "group"
                     ? "Group"
@@ -429,6 +579,7 @@ export function Inbox(p: Props) {
                       : "WhatsApp"}{" "}
                   · {p.connected ? "Ready to send" : "Disconnected"}
                 </small>
+                )}
               </div>
               {chat?.type === "group" ? (
                 <button
@@ -439,6 +590,17 @@ export function Inbox(p: Props) {
                   onClick={() => setAddingTo(addingTo === chat.id ? null : chat.id)}
                 >
                   <AddPersonIcon />
+                </button>
+              ) : null}
+              {chat?.type === "group" ? (
+                <button
+                  className="header-pin icon-button"
+                  title="Leave group"
+                  aria-label="Leave this group"
+                  disabled={p.busy}
+                  onClick={() => setLeaving(true)}
+                >
+                  <LeaveIcon />
                 </button>
               ) : null}
               {chat ? <button className={"header-pin icon-button " + (chat.pinned ? "pinned" : "")}
@@ -543,15 +705,21 @@ export function Inbox(p: Props) {
                     {newDay ? (
                       <div className="message-day">{new Date(m.timestamp).toDateString() === new Date().toDateString() ? "Today" : new Date(m.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div>
                     ) : null}
+                    {m.type === "system" ? (
+                      <div id={"msg-" + m.id} className={"message-day message-system" + (highlight === m.id ? " highlighted" : "")}>
+                        {formatText(m.text || "", m.mentions)}
+                      </div>
+                    ) : (
                     <MessageBubble
                       message={m}
                       group={chat?.type === "group"}
-                      continued={!newDay && previous.direction === m.direction && !unknownSender(m) && who(previous) === who(m)}
+                      continued={!newDay && previous.type !== "system" && previous.direction === m.direction && !unknownSender(m) && who(previous) === who(m)}
                       highlighted={highlight === m.id}
                       canAct={p.connected && !p.busy}
                       actions={actions}
                       peer={peer}
                     />
+                    )}
                   </Fragment>
                 );
               })}
@@ -735,7 +903,10 @@ export function Inbox(p: Props) {
                 value={text}
                 maxLength={10000}
                 disabled={!p.connected || p.busy}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => {
+                  setText(e.target.value);
+                  typed(e.target.value);
+                }}
                 onPaste={(e) => {
                   const file = [...e.clipboardData.files][0];
                   if (file) {
@@ -756,10 +927,13 @@ export function Inbox(p: Props) {
               />
               <button
                 type="submit"
+                className={sending ? "sending" : undefined}
                 disabled={p.busy || !p.connected || (!text.trim() && !attachment)}
               >
-                <span aria-hidden="true">{editing ? "✓" : "➤"}</span>
-                <span className="visually-hidden">{editing ? "Save edit" : "Send message"}</span>
+                {sending ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">{editing ? "✓" : "➤"}</span>}
+                <span className="visually-hidden" aria-live="polite">
+                  {sending ? (editing ? "Saving edit…" : "Sending…") : editing ? "Save edit" : "Send message"}
+                </span>
               </button>
             </form>
             {forwarding ? (
@@ -821,6 +995,38 @@ export function Inbox(p: Props) {
                 </div>
               </div>
             ) : null}
+            {leaving && chat ? (
+              <div className="modal-backdrop" onClick={() => setLeaving(false)}>
+                <div className="modal" role="dialog" aria-modal="true" aria-labelledby="leave-title" onClick={(e) => e.stopPropagation()}>
+                  <h3 id="leave-title">Leave {chatTitle(chat)}?</h3>
+                  <p>
+                    You will stop receiving its messages and can only rejoin if
+                    an admin adds you back or you use an invite link.
+                  </p>
+                  {p.connected ? null : <p className="inline-error">Connect WhatsApp to leave this group.</p>}
+                  <div className="modal-actions">
+                    <button
+                      className="danger"
+                      disabled={!p.connected || p.busy}
+                      onClick={() =>
+                        void p.act(async () => {
+                          await request(`/internal/groups/${encodeURIComponent(chat.id)}/leave`, "POST");
+                          setLeaving(false);
+                          setAddingTo(null);
+                          p.notify(`You left ${chatTitle(chat)}`);
+                        })
+                      }
+                    >
+                      Leave group
+                    </button>
+                    <button className="text-button" onClick={() => setLeaving(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                  <small>The chat and its history stay on this device. Any automation for this group is paused.</small>
+                </div>
+              </div>
+            ) : null}
             {viewer ? (
               <div className="media-viewer" role="dialog" aria-modal="true" aria-label="Photo" onClick={() => setViewer(null)}>
                 <div className="media-viewer-bar" onClick={(e) => e.stopPropagation()}>
@@ -856,6 +1062,9 @@ export function Inbox(p: Props) {
 }
 function AddPersonIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4" /><path d="M2 21c0-3.9 3.1-7 7-7s7 3.1 7 7M19 8v6M16 11h6" /></svg>;
+}
+function LeaveIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" /></svg>;
 }
 function PinIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5-4 1-3 5v3l-7-7h3l5-3zM9 15l-6 6" /></svg>;
@@ -907,7 +1116,7 @@ function ForwardDialog({
                 disabled={!chosen.includes(c.id) && chosen.length >= 5}
                 onChange={() => toggle(c.id)}
               />
-              <span className="avatar">{initials(chatTitle(c))}</span>
+              <Avatar chat={c} />
               <span>{chatTitle(c)}</span>
             </label>
           ))}

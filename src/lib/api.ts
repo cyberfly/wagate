@@ -55,6 +55,8 @@ export type {
   GroupImport,
   GroupImportMember,
   GroupAddResult,
+  SearchHit,
+  ChatPresence,
 } from "../../sidecar/src/messaging/types";
 export type {
   AutomationPost,
@@ -73,6 +75,7 @@ import type {
   ConnectionState,
   Broadcast,
   GroupImport,
+  ChatPresence,
 } from "../../sidecar/src/messaging/types";
 export interface TunnelState {
   status: "off" | "installing" | "starting" | "online" | "error";
@@ -94,6 +97,8 @@ export interface Profile {
 }
 export interface Snapshot {
   health: { status: string; database: string; version: string; ai: string };
+  /** The person has agreed to the current terms of use. */
+  termsAccepted: boolean;
   /** The profile this snapshot describes. */
   profile: Profile;
   /** Every WhatsApp number in the app, the main one first. */
@@ -104,6 +109,8 @@ export interface Snapshot {
   /** The chat has older stored messages than `messages` holds. */
   hasMoreMessages?: boolean;
   drafts: Draft[];
+  /** Who is online or typing in the open chat. */
+  presence?: ChatPresence | null;
   processing: string[];
   tunnel: TunnelState | null;
   broadcasts: Broadcast[];

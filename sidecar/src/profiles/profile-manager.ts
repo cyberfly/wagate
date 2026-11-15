@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import type { ConnectionState, ConnectionStatus } from "../messaging/types";
 import type { ProfileRuntime, Logger } from "./profile-runtime";
+import { EventBus } from "../events/event-bus";
 /** The main profile: its data is the original database and it cannot be removed. */
 export const defaultProfile = "default";
 /** Each profile holds its own WhatsApp connection, so the count is bounded. */
@@ -52,6 +53,11 @@ export class ProfileManager {
   private failed = new Set<string>();
   private removing = new Set<string>();
   private started = false;
+  /**
+   * Every profile's events in one stream, each as `{ profile, data }`, for
+   * the desktop app: it refreshes on them and raises notifications.
+   */
+  readonly feed = new EventBus();
   constructor(
     private db: Database,
     private o: ProfileManagerOptions,
@@ -101,6 +107,7 @@ export class ProfileManager {
     runtime.events.subscribe((event) => {
       if (event.type === "messaging.connection")
         this.connected(id, event.data as ConnectionState);
+      this.feed.publish(event.type, { profile: id, data: event.data });
     });
     this.runtimes.set(id, runtime);
     if (this.started) runtime.start();
@@ -246,6 +253,13 @@ export class ProfileManager {
     } finally {
       this.removing.delete(id);
     }
+  }
+  /** Unread chats across every number, for the app's badge. */
+  unreadChats() {
+    let total = 0;
+    for (const [id, runtime] of this.runtimes)
+      if (!this.removing.has(id)) total += runtime.chats.unreadChats();
+    return total;
   }
   /** Stops every profile and closes the databases of all but the main one. */
   async close() {

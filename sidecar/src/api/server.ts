@@ -1,4 +1,5 @@
 import { Hono, type Context, type Next } from "hono";
+import { version } from "../../../package.json";
 import { bodyLimit } from "hono/body-limit";
 import { timingSafeEqual } from "node:crypto";
 import { streamSSE } from "hono/streaming";
@@ -12,6 +13,23 @@ import type { TunnelService } from "../tunnel/tunnel-service";
 import type { ProfileManager } from "../profiles/profile-manager";
 import type { ProfileRuntime } from "../profiles/profile-runtime";
 import { defaultProfile } from "../profiles/profile-manager";
+import type { Message } from "../messaging/types";
+/**
+ * The terms a person agrees to before using the app (TERMS.md). Raise this
+ * when they change in substance, so everyone is asked again.
+ */
+export const termsVersion = "1";
+/** What a message without text is called in a notification. */
+const mediaLabels: Partial<Record<Message["type"], string>> = {
+  image: "Photo",
+  video: "Video",
+  audio: "Audio",
+  document: "Document",
+  sticker: "Sticker",
+  location: "Location",
+  contact: "Contact",
+  poll: "Poll",
+};
 interface Services {
   /** Every WhatsApp number; each request works with one of them. */
   profiles: ProfileManager;
@@ -142,7 +160,7 @@ export function createApi(s: Services) {
             database: s.databaseHealthy() ? "connected" : "error",
             whatsapp: s.profiles.main().provider.getConnectionState().status,
             profiles: s.profiles.list().length,
-            version: "0.2.0",
+            version,
           },
     ),
   );
@@ -190,7 +208,7 @@ export function createApi(s: Services) {
       whatsapp: p.provider.getConnectionState().status,
       database: p.databaseHealthy() ? "connected" : "error",
       profile: { id, name, account },
-      version: "0.2.0",
+      version,
     });
   });
   // Any valid key may list the numbers it can use, to pick one per request.
@@ -328,7 +346,8 @@ export function createApi(s: Services) {
     app.get("/internal/snapshot", (c) => {
       const chatId = c.req.query("chatId");
       // Scrolling up asks for more of the chat's stored history.
-      const limit = Math.min(500, Math.max(50, Number(c.req.query("limit")) || 50));
+      // ...and opening a search result asks for everything back to that message.
+      const limit = Math.min(2000, Math.max(50, Number(c.req.query("limit")) || 50));
       const p = profile(c);
       const page = chatId ? p.messages.page(chatId, limit) : null;
       return c.json({
@@ -336,12 +355,13 @@ export function createApi(s: Services) {
           status: s.databaseHealthy() && p.databaseHealthy() ? "ok" : "error",
           database:
             s.databaseHealthy() && p.databaseHealthy() ? "connected" : "error",
-          version: "0.2.0",
+          version,
           ai:
             s.settings.get("ai.configured") === "true"
               ? "configured"
               : "not_configured",
         },
+        termsAccepted: s.settings.get("terms.accepted") === termsVersion,
         profile: s.profiles.describe(p.id),
         profiles: s.profiles.list(),
         connection: p.provider.getConnectionState(),
@@ -349,6 +369,7 @@ export function createApi(s: Services) {
         messages: page?.messages ?? [],
         hasMoreMessages: !!page?.nextCursor,
         drafts: chatId ? p.drafts.list(chatId) : [],
+        presence: chatId ? p.presence.describe(chatId) : null,
         processing: p.copilot.status(),
         tunnel: s.tunnel?.status() ?? null,
         broadcasts: p.broadcasts.list(),
@@ -358,6 +379,131 @@ export function createApi(s: Services) {
         alerts: p.alerts,
       });
     });
+    app.get("/internal/search", (c) => {
+      const q = (c.req.query("q") ?? "").trim();
+      if (q.length < 2 || q.length > 100)
+        return c.json({ error: "Search for 2–100 characters" }, 400);
+      return c.json({ results: profile(c).messages.search(q) });
+    });
+    app.post("/internal/terms/accept", (c) => {
+      s.settings.set("terms.accepted", termsVersion);
+      s.settings.set("terms.acceptedAt", String(Date.now()));
+      return c.json({ success: true });
+    });
+    const preferences = () => ({
+      notifications: s.settings.get("notifications.enabled") !== "false",
+      preview: s.settings.get("notifications.preview") !== "false",
+      presence: s.settings.get("presence.enabled") !== "false",
+    });
+    app.get("/internal/preferences", (c) => c.json(preferences()));
+    app.put("/internal/preferences", standardLimit, async (c) => {
+      const b = await body(c);
+      for (const [field, key] of [
+        ["notifications", "notifications.enabled"],
+        ["preview", "notifications.preview"],
+        ["presence", "presence.enabled"],
+      ] as const) {
+        if (b[field] === undefined) continue;
+        if (typeof b[field] !== "boolean") return c.json({ error: `Invalid ${field}` }, 400);
+        s.settings.set(key, String(b[field]));
+      }
+      // Turning presence off takes every number offline at once.
+      if (b.presence === false)
+        for (const p of s.profiles.list()) void s.profiles.get(p.id)?.presence.away();
+      return c.json(preferences());
+    });
+    // The app reports what the person is doing with the open chat: looking at
+    // it ("open", repeated while it stays in front), typing, or done typing.
+    app.post("/internal/chats/:chatId/presence", standardLimit, async (c) => {
+      const chatId = resolveChatId(c.req.param("chatId"));
+      const state = (await body(c)).state;
+      if (state !== "open" && state !== "composing" && state !== "paused")
+        return c.json({ error: "Invalid state" }, 400);
+      if (!preferences().presence) return c.json({ success: true, active: false });
+      const presence = profile(c).presence;
+      if (state === "open") await presence.open(chatId);
+      else await presence.typing(chatId, state === "composing");
+      return c.json({ success: true, active: true });
+    });
+    app.post("/internal/presence/away", async (c) => {
+      await profile(c).presence.away();
+      return c.json({ success: true });
+    });
+    /** What to show for a new message, or null when its chat should stay quiet. */
+    const notification = (profileId: string, received: Message) => {
+      const prefs = preferences();
+      const runtime = s.profiles.get(profileId);
+      if (!prefs.notifications || !runtime || received.deletedAt) return null;
+      const chat = runtime.chats.get(received.chatId);
+      if (!chat || chat.muted || chat.archived) return null;
+      const message = runtime.messages.get(received.id) ?? received;
+      const number = (id: string) =>
+        id.endsWith("@s.whatsapp.net") ? "+" + id.split("@")[0] : id.split("@")[0]!;
+      const title = chat.name && chat.name !== chat.id ? chat.name : number(chat.id);
+      let text = "New message";
+      if (prefs.preview) {
+        const line = (message.text || mediaLabels[message.type] || "Message")
+          .replace(/\s+/g, " ")
+          .trim();
+        const sender =
+          chat.type === "group"
+            ? message.senderName || (message.senderPhone ? number(message.senderPhone) : "")
+            : "";
+        text = ((sender ? sender + ": " : "") + line).slice(0, 180);
+      }
+      const profile = s.profiles.describe(profileId);
+      return {
+        profile: profileId,
+        chatId: chat.id,
+        // With several numbers, say which one the message reached.
+        title: s.profiles.list().length > 1 && profile ? `${title} · ${profile.name}` : title,
+        body: text,
+      };
+    };
+    // The desktop app's own stream, across every number: `changed` says a
+    // profile's snapshot is stale (profile "*" for app-wide state), `unread`
+    // carries the badge count, and `notify` a notification to show.
+    app.get("/internal/events", (c) =>
+      streamSSE(c, async (stream) => {
+        const write = (event: string, data: unknown) =>
+          void stream.writeSSE({ event, data: JSON.stringify(data) }).catch(() => {});
+        const dirty = new Set<string>();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let unread = -1;
+        const flush = () => {
+          timer = undefined;
+          for (const id of dirty) write("changed", { profile: id });
+          dirty.clear();
+          const count = s.profiles.unreadChats();
+          if (count !== unread) write("unread", { count: (unread = count) });
+        };
+        const unsubscribe = s.profiles.feed.subscribe((event) => {
+          const data = event.data as { profile?: unknown; data?: unknown } | null;
+          const id = typeof data?.profile === "string" ? data.profile : "*";
+          // A burst, such as history sync, becomes one refresh.
+          dirty.add(id);
+          timer ??= setTimeout(flush, 120);
+          if (event.type === "message.received" && id !== "*") {
+            const note = notification(id, data!.data as Message);
+            if (note) write("notify", note);
+          }
+        });
+        const stop = () => {
+          unsubscribe();
+          clearTimeout(timer);
+        };
+        stream.onAbort(stop);
+        try {
+          flush();
+          while (!stream.aborted) {
+            await stream.writeSSE({ event: "heartbeat", data: "{}" });
+            await stream.sleep(15000);
+          }
+        } finally {
+          stop();
+        }
+      }),
+    );
     app.get("/internal/profiles", (c) =>
       c.json({ profiles: s.profiles.list() }),
     );
@@ -437,6 +583,14 @@ export function createApi(s: Services) {
           data.phones.map((p: unknown) => string(p, "phone number", 20)),
         ),
       );
+    });
+    app.post("/internal/groups/:groupId/leave", async (c) => {
+      const p = profile(c), groupId = resolveChatId(c.req.param("groupId")!);
+      await p.groupImports.leave(groupId);
+      // Its scheduled posts could no longer be sent.
+      if (p.automations.list().some((a) => a.chatId === groupId && a.enabled))
+        p.automations.pause(groupId);
+      return c.json({ success: true });
     });
     app.post("/internal/group-imports/:id/cancel", (c) =>
       c.json(profile(c).groupImports.cancel(c.req.param("id"))),
@@ -528,6 +682,10 @@ export function createApi(s: Services) {
       (await s.vault()).delete("openrouter");
       s.settings.set("ai.configured", "false");
       return c.json({ success: true });
+    });
+    app.get("/internal/chats/:chatId/avatar", (c) => {
+      const data = profile(c).avatars.get(resolveChatId(c.req.param("chatId")));
+      return c.json({ data: data ? Buffer.from(data).toString("base64") : null });
     });
     app.put("/internal/chats/:chatId/pin", async (c) => {
       const { pinned } = await body(c);

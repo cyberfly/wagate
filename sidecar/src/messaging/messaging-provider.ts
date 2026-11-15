@@ -11,6 +11,7 @@ import type {
   GroupInfo,
   GroupAddResult,
   PhoneLink,
+  PresenceUpdate,
 } from "./types";
 export interface ProviderEvents {
   connection: (state: ConnectionState) => void;
@@ -21,6 +22,7 @@ export interface ProviderEvents {
   chat: (chat: ChatUpdate) => void;
   contacts: (contacts: ContactNames[]) => void;
   phones: (links: PhoneLink[]) => void;
+  presence: (update: PresenceUpdate) => void;
   error: (message: string) => void;
 }
 export interface MessagingProvider {
@@ -51,6 +53,18 @@ export interface MessagingProvider {
   forward(target: StoredMessage, chatId: string): Promise<ReceivedMessage>;
   /** The small JPEG preview embedded in an image, video or sticker, if any. */
   thumbnail(target: StoredMessage): Uint8Array | null;
+  /**
+   * Shows this account as online or offline, or as typing (or no longer
+   * typing) in one chat.
+   */
+  setPresence(
+    state: "available" | "unavailable" | "composing" | "paused",
+    chatId?: string,
+  ): Promise<void>;
+  /** Asks WhatsApp to report who is online or typing in a chat. */
+  watchPresence(chatId: string): Promise<void>;
+  /** A chat's small profile picture; null when it has none or hides it. */
+  profilePicture(chatId: string): Promise<Uint8Array | null>;
   getConnectionState(): ConnectionState;
   listGroups(): Promise<GroupInfo[]>;
   getGroup(id: string): Promise<GroupInfo>;
@@ -67,6 +81,8 @@ export interface MessagingProvider {
     groupId: string,
     phones: string[],
   ): Promise<GroupAddResult[]>;
+  /** Leaves a group. Its chat and history stay on this device. */
+  leaveGroup(groupId: string): Promise<void>;
 }
 // Historical reads deliberately live in repositories: SQLite is the source of truth.
 

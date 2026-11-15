@@ -2,9 +2,13 @@ import type { Database } from "bun:sqlite";
 import type { Chat, ChatUpdate } from "../messaging/types";
 // A chat's own name is its id until WhatsApp supplies one (a group subject, or
 // a name from history sync), so contact names fill in for direct chats.
+/** A mute still in force: one with no end, or one that ends later. */
+const muted = `(c.muted_until=-1 OR c.muted_until>CAST(strftime('%s','now') AS INTEGER)*1000)`;
 const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name,c.id) AS name,
  c.type,c.last_message_at AS lastMessageAt,c.ai_mode AS aiMode,
  COALESCE(c.inbox_pinned,c.pinned_at IS NOT NULL) AS pinned,c.archived<>0 AS archived,c.unread_count AS unreadCount,
+ COALESCE(${muted},0) AS muted,
+ (SELECT a.changed_at FROM avatars a WHERE a.id=c.id AND a.data IS NOT NULL) AS avatar,
  (SELECT CASE WHEN m.deleted_at IS NOT NULL THEN '🚫 This message was deleted'
    WHEN m.type='text' THEN m.text
    ELSE CASE m.type WHEN 'image' THEN '📷 ' WHEN 'video' THEN '🎥 ' WHEN 'audio' THEN '🎤 ' WHEN 'document' THEN '📄 '
@@ -12,18 +16,19 @@ const columns = `c.id,c.provider,COALESCE(k.name,NULLIF(c.name,c.id),k.push_name
     || COALESCE(substr(m.text,1,CASE WHEN instr(m.text,char(10))>0 THEN instr(m.text,char(10))-1 ELSE 200 END),
      CASE m.type WHEN 'image' THEN 'Photo' WHEN 'video' THEN 'Video' WHEN 'audio' THEN 'Audio' WHEN 'document' THEN 'Document'
       WHEN 'sticker' THEN 'Sticker' WHEN 'location' THEN 'Location' WHEN 'contact' THEN 'Contact' WHEN 'poll' THEN 'Poll' ELSE 'Message' END)
-   END FROM messages m WHERE m.chat_id=c.id
+   END FROM messages m WHERE m.chat_id=c.id AND m.type<>'system'
   ORDER BY m.timestamp DESC,m.id DESC LIMIT 1) AS lastMessage`;
 const from = "chats c LEFT JOIN contacts k ON k.id=c.id";
-type Row = Omit<Chat, "pinned" | "archived"> & {
+type Row = Omit<Chat, "pinned" | "archived" | "muted"> & {
   pinned: number;
   archived: number;
+  muted: number;
 };
 const toChat = (row: Row | null): Chat | null =>
-  row && { ...row, pinned: !!row.pinned, archived: !!row.archived };
+  row && { ...row, pinned: !!row.pinned, archived: !!row.archived, muted: !!row.muted };
 export class ChatRepository {
   constructor(private db: Database) {}
-  upsert(chat: Omit<Chat, "aiMode" | "pinned" | "archived">) {
+  upsert(chat: Omit<Chat, "aiMode" | "pinned" | "archived" | "muted" | "avatar">) {
     const now = Date.now();
     this.db
       .query(
@@ -66,6 +71,10 @@ export class ChatRepository {
         this.db
           .query("UPDATE chats SET archived=? WHERE id=?")
           .run(update.archived ? 1 : 0, update.id);
+      if (update.mutedUntil !== undefined)
+        this.db
+          .query("UPDATE chats SET muted_until=? WHERE id=?")
+          .run(update.mutedUntil, update.id);
       if (update.unreadCount !== undefined)
         this.db
           .query(
@@ -96,6 +105,17 @@ export class ChatRepository {
         )
         .all() as Row[]
     ).map((row) => toChat(row)!);
+  }
+  /** Chats with unread messages that are neither archived nor muted. */
+  unreadChats() {
+    return (
+      this.db
+        .query(
+          `SELECT COUNT(*) AS n FROM chats c WHERE c.unread_count>0 AND c.archived=0
+           AND c.last_message_at IS NOT NULL AND NOT COALESCE(${muted},0)`,
+        )
+        .get() as { n: number }
+    ).n;
   }
   /** One more unread message, from a live incoming message. */
   addUnread(id: string) {

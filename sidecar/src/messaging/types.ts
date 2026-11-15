@@ -23,6 +23,10 @@ export interface Chat {
   lastMessage?: string | null;
   /** Incoming messages not yet read here or on another device. */
   unreadCount?: number;
+  /** Muted on WhatsApp: new messages raise no notification. */
+  muted?: boolean;
+  /** When the stored profile picture last changed; null without one. */
+  avatar?: number | null;
 }
 export interface GroupInfo {
   id: string;
@@ -41,6 +45,8 @@ export interface ChatUpdate {
   archived?: boolean;
   /** Unread messages; -1 when marked unread without a count. */
   unreadCount?: number;
+  /** When a mute ends, -1 for a mute with no end, or null once unmuted. */
+  mutedUntil?: number | null;
 }
 /** A person's LID and phone-number id, as WhatsApp revealed them. */
 export interface PhoneLink {
@@ -107,6 +113,8 @@ export type MessageType =
   | "location"
   | "contact"
   | "poll"
+  /** A group event, such as someone joining; its text names people as mentions. */
+  | "system"
   | "unknown";
 export type MessageStatus = "pending" | "sent" | "delivered" | "read" | "failed";
 export interface MessageMedia {
@@ -280,6 +288,32 @@ export interface GroupImport {
   createdAt: number;
   updatedAt: number;
   members: GroupImportMember[];
+}
+/** What someone in a chat is doing, as WhatsApp reports it. */
+export interface PresenceUpdate {
+  chatId: string;
+  /** The person; in a direct chat, the chat itself. */
+  participant: string;
+  state: "available" | "unavailable" | "composing" | "recording" | "paused";
+}
+/** Who is online or typing in the open chat. */
+export interface ChatPresence {
+  /** The other person in a direct chat is online. */
+  online: boolean;
+  typing: { id: string; name: string | null; state: "composing" | "recording" }[];
+}
+/** A message whose text matches a search. */
+export interface SearchHit {
+  id: string;
+  chatId: string;
+  direction: Message["direction"];
+  type: MessageType;
+  senderName: string | null;
+  /** The text around the match, on one line. */
+  snippet: string;
+  timestamp: number;
+  /** Counting back from the chat's newest message, which is 1. */
+  position: number;
 }
 export interface MessagePage {
   messages: Message[];

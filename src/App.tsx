@@ -1,4 +1,6 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
+/** The most messages of one chat kept loaded; the gateway's own cap. */
+const maxLoaded = 2000;
 import { useGateway } from "./hooks/use-gateway";
 import {
   defaultProfile,
@@ -10,6 +12,8 @@ import {
 import { ProfileSwitcher } from "./components/ProfileSwitcher";
 import { Profiles } from "./components/Profiles";
 import { Connection } from "./components/Connection";
+import { Notifications } from "./components/Notifications";
+import { Terms } from "./components/Terms";
 import { Inbox } from "./components/Inbox";
 import { Settings } from "./components/Settings";
 import { ApiAccess } from "./components/ApiAccess";
@@ -76,8 +80,32 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [info]);
   const { snapshot, error, refresh } = useGateway(profileId, selected, messageLimit);
-  // Each chat opens on its latest messages.
-  useEffect(() => setMessageLimit(50), [selected, profileId]);
+  // Each chat opens on its latest messages, unless it is opened at a search
+  // result further back.
+  const openingLimit = useRef<number | null>(null);
+  const [target, setTarget] = useState<string | null>(null);
+  useEffect(() => {
+    setMessageLimit(openingLimit.current ?? 50);
+    openingLimit.current = null;
+  }, [selected, profileId]);
+  /** Opens a chat at one message, loading history back to it. */
+  const openMessage = useCallback(
+    (chatId: string, messageId: string, position: number) => {
+      if (position > maxLoaded - 20) {
+        setInfo("That message is too far back to open here. Scroll up in the chat to reach it.");
+        setSelected(chatId);
+        return;
+      }
+      const needed = Math.max(50, position + 20);
+      if (chatId === selected) setMessageLimit((n) => Math.max(n, needed));
+      else {
+        openingLimit.current = needed;
+        setSelected(chatId);
+      }
+      setTarget(messageId);
+    },
+    [selected],
+  );
   // Switching numbers starts fresh: no open chat, no notice from the last one.
   const selectProfile = useCallback((id: string) => {
     setActiveProfile(id);
@@ -117,6 +145,9 @@ export default function App() {
   const connected = snapshot?.connection.status === "connected";
   const sending = snapshot?.broadcasts.find((b) => b.status === "running");
   const adding = snapshot?.groupImports.find((i) => i.status === "running");
+  // Nothing is usable until the terms are agreed to; numbers already linked
+  // stay connected meanwhile.
+  if (snapshot && !snapshot.termsAccepted) return <Terms accepted={refresh} />;
   return (
     <div
       className={
@@ -197,7 +228,7 @@ export default function App() {
             <br />
             Under your control.
           </p>
-          <small>Wagate v0.2.0</small>
+          <small>Wagate{snapshot ? " v" + snapshot.health.version : ""}</small>
         </div>
       </aside>
       <main>
@@ -300,6 +331,7 @@ export default function App() {
                   created={profileCreated}
                 />
               ) : null}
+              <Notifications />
             </>
           ) : page === "settings" ? (
             <Settings busy={busy} act={act} />
@@ -346,7 +378,11 @@ export default function App() {
               selected={selected}
               select={setSelected}
               hasMore={!!snapshot?.hasMoreMessages}
-              loadOlder={() => setMessageLimit((n) => Math.min(500, n + 50))}
+              loadOlder={() => setMessageLimit((n) => Math.min(maxLoaded, n + 50))}
+              presence={snapshot?.presence ?? null}
+              openMessage={openMessage}
+              target={target}
+              clearTarget={() => setTarget(null)}
               notify={(text, kind = "info") => (kind === "error" ? setNotice(text) : setInfo(text))}
               connected={connected && !error}
               processing={

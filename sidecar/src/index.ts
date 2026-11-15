@@ -3,7 +3,6 @@ import { join, resolve } from "node:path";
 import { mkdirSync, chmodSync, rmSync } from "node:fs";
 import { openDatabase } from "./db/database";
 import { BaileysProvider } from "./messaging/baileys/baileys-provider";
-import { EventBus } from "./events/event-bus";
 import { ApiKeys } from "./security/api-keys";
 import { Vault } from "./security/vault";
 import { Settings } from "./config/settings";
@@ -97,7 +96,8 @@ const publicApp = createApi({
 });
 const tunnel = new TunnelService({
   dataDir,
-  events: new EventBus(),
+  // Tunnel progress reaches the desktop app through the same stream.
+  events: profiles.feed,
   log,
   fetch: publicApp.fetch,
 });

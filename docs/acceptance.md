@@ -30,6 +30,23 @@ Use an account you control and a consenting test recipient. Automated tests are 
 - [ ] Create an API key limited to the second profile; `/v1/messages/send` without `X-Wagate-Profile` sends from the second number, and `X-Wagate-Profile: default` returns 403.
 - [ ] Remove the second profile while connected: it disappears from **Linked Devices** on that phone, and its `profiles/<id>` directory is gone.
 
+- [ ] Close the window: Wagate stays in the tray/Dock, a message from another phone raises a notification, and the Dock badge shows the unread chat count.
+- [ ] A chat muted on the phone raises no notification and is left out of the badge; unmuting it restores both within a minute.
+- [ ] Turning off **Notify me about new messages** stops notifications; hiding the text shows only "New message".
+- [ ] Open Wagate a second time: the running window comes forward and no second copy starts.
+- [ ] Kill `wagate-sidecar`: the inbox recovers within a few seconds without reopening the app.
+- [ ] An incoming message appears in the open chat in under a second.
+
+- [ ] First launch shows the terms; the app opens only after ticking the box and continuing, and they are not shown again on the next launch.
+- [ ] Broadcast and Add to group start on the Careful pace (30–60 s) and cannot be started until the consent box is ticked.
+
+- [ ] Profile pictures appear in the chat list and header within a minute of scrolling to a chat, and are still there after a restart.
+- [ ] Photos, videos and voice notes display in a release build (the content security policy now allows `blob:` media).
+- [ ] Searching a word from an old message lists it under **Messages**; clicking it opens the chat at that message.
+- [ ] Adding someone to a test group, renaming it, and leaving it each show a centred line with the right names.
+- [ ] With a chat open, the other phone sees "online" and "typing…"; typing on the other phone shows "typing…" in the header. Switching to another app takes Wagate offline within seconds.
+- [ ] With **Show when I am online and typing** off, the other phone never sees Wagate online.
+
 Recovery checks:
 
 - [ ] QR expiry refreshes or gives a visible retry state.

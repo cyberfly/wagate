@@ -78,6 +78,13 @@ export class FakeProvider implements MessagingProvider {
       status: this.addOutcomes.get(phone) ?? ("added" as const),
     }));
   }
+  leaveCalls: string[] = [];
+  async leaveGroup(groupId: string) {
+    if (this.state.status !== "connected")
+      throw new Error("WhatsApp is disconnected");
+    this.leaveCalls.push(groupId);
+    this.groups = this.groups.filter((g) => g.id !== groupId);
+  }
   async connect() {
     this.state = { status: "connected" };
   }
@@ -165,6 +172,23 @@ export class FakeProvider implements MessagingProvider {
     m.forwarded = true;
     return m;
   }
+  presences: { state: string; chatId?: string }[] = [];
+  async setPresence(state: "available" | "unavailable" | "composing" | "paused", chatId?: string) {
+    this.presences.push(chatId ? { state, chatId } : { state });
+  }
+  watched: string[] = [];
+  async watchPresence(chatId: string) {
+    this.watched.push(chatId);
+  }
+  /** Profile pictures by chat; a missing entry means the chat has none. */
+  pictures = new Map<string, Uint8Array>();
+  pictureCalls: string[] = [];
+  pictureError: Error | null = null;
+  async profilePicture(chatId: string) {
+    this.pictureCalls.push(chatId);
+    if (this.pictureError) throw this.pictureError;
+    return this.pictures.get(chatId) ?? null;
+  }
   thumbnails = new Map<string, Uint8Array>();
   thumbnail(target: StoredMessage) {
     return this.thumbnails.get(target.providerMessageId) ?? null;
@@ -205,7 +229,7 @@ export function setup(ai?: AIProvider) {
           return provider;
         },
         // No pacing in tests: the next send is scheduled on the next timer tick.
-        pace: { broadcast: () => 0, groupImport: () => 0 },
+        pace: { broadcast: () => 0, groupImport: () => 0, avatar: 0 },
       }),
   });
   profiles.load();

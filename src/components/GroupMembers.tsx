@@ -65,8 +65,10 @@ export function GroupMembers({ imports, connected, busy, act }: Props) {
     [csvError, setCsvError] = useState(""),
     [phoneCol, setPhoneCol] = useState(""),
     [countryCode, setCountryCode] = useState("60"),
-    [minDelay, setMinDelay] = useState(10),
-    [maxDelay, setMaxDelay] = useState(20),
+    // The careful pace: bulk sending is what gets numbers restricted.
+    [minDelay, setMinDelay] = useState(30),
+    [maxDelay, setMaxDelay] = useState(60),
+    [agreed, setAgreed] = useState(false),
     [excluded, setExcluded] = useState<Set<number>>(new Set()),
     [confirming, setConfirming] = useState(false),
     [openId, setOpenId] = useState<string | null>(null);
@@ -328,9 +330,17 @@ export function GroupMembers({ imports, connected, busy, act }: Props) {
                 They are added {batchSize} at a time over {estimate}. Keep Wagate open until it finishes.
                 Each person sees that you added them.
               </p>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={agreed}
+                  onChange={(e) => setAgreed(e.target.checked)}
+                />
+                Everyone on this list expects to be added to this group.
+              </label>
               <div className="button-row">
                 <button
-                  disabled={busy || !!blocker}
+                  disabled={busy || !!blocker || !agreed}
                   onClick={() => void start()}
                 >
                   Add {ready.length} now
@@ -347,7 +357,10 @@ export function GroupMembers({ imports, connected, busy, act }: Props) {
             <div className="button-row">
               <button
                 disabled={busy || !!blocker}
-                onClick={() => setConfirming(true)}
+                onClick={() => {
+                  setAgreed(false);
+                  setConfirming(true);
+                }}
               >
                 Review and add{ready.length ? ` ${ready.length}` : ""}
               </button>

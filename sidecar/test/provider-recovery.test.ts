@@ -15,6 +15,7 @@ test("credential-store failure permits retry without deleting the WhatsApp sessi
       receipt: () => {}, reaction: () => {}, change: () => {},
       contacts: () => {},
       phones: () => {},
+    presence: () => {},
       error: () => {},
     },
   );
