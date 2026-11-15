@@ -69,7 +69,7 @@ jobs:
     name: macOS (Apple Silicon)
     needs: release
     if: github.event_name == 'push' || inputs.platforms != 'windows'
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
