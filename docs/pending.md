@@ -1,6 +1,6 @@
 # Pending work
 
-What is left before a public release, as of 2026-11-15. The work so far is on the branch `feat/production-readiness` (not pushed, not merged).
+What is left before a public release, as of 2026-11-15. The work is merged into `main` and released as 0.3.0 before the live acceptance run below.
 
 ## Before anything else
 
