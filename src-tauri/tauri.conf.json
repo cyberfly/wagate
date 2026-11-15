@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Wagate \u2014 WhatsApp Gateway",
+        "title": "Wagate",
         "width": 1180,
         "height": 800,
         "minWidth": 850,
@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src ipc: http://ipc.localhost; object-src 'none'"
     }
   },
   "bundle": {
